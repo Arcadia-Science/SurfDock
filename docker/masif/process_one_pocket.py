@@ -22,12 +22,11 @@ from input_output.protonate import protonate
 from save_ply_surfdock import save_ply
 
 
-DIST_THRESHOLD = 8
-
 protein_file = sys.argv[1]
 ligand_file = sys.argv[2]
 out_dir = sys.argv[3]
 tsv_path = sys.argv[4] if len(sys.argv) > 4 else None
+DIST_THRESHOLD = int(sys.argv[5]) if len(sys.argv) > 5 else 8
 pdb_id = os.path.basename(protein_file).replace("_protein.pdb", "")
 
 
@@ -46,8 +45,8 @@ os.makedirs(tmp_dir, exist_ok=True)
 complex_out_dir = os.path.join(out_dir, pdb_id)
 os.makedirs(complex_out_dir, exist_ok=True)
 
-out_ply = os.path.join(complex_out_dir, f"{pdb_id}_protein_processed_8A.ply")
-out_pocket_pdb = os.path.join(complex_out_dir, f"{pdb_id}_protein_processed_8A.pdb")
+out_ply = os.path.join(complex_out_dir, f"{pdb_id}_protein_processed_{DIST_THRESHOLD}A.ply")
+out_pocket_pdb = os.path.join(complex_out_dir, f"{pdb_id}_protein_processed_{DIST_THRESHOLD}A.pdb")
 if os.path.exists(out_ply):
     write_tsv(f"{pdb_id}\tSKIP\t\t")
     sys.exit(0)
