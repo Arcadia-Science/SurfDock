@@ -47,6 +47,7 @@ os.makedirs(complex_out_dir, exist_ok=True)
 
 out_ply = os.path.join(complex_out_dir, f"{pdb_id}_protein_processed_{DIST_THRESHOLD}A.ply")
 out_pocket_pdb = os.path.join(complex_out_dir, f"{pdb_id}_protein_processed_{DIST_THRESHOLD}A.pdb")
+out_clean_pdb = os.path.join(complex_out_dir, f"{pdb_id}_protein_clean.pdb")
 if os.path.exists(out_ply):
     write_tsv(f"{pdb_id}\tSKIP\t\t")
     sys.exit(0)
@@ -199,6 +200,7 @@ try:
     )
 
     shutil.copy(pocket_pdb, out_pocket_pdb)
+    shutil.copy(cleaned_protein, out_clean_pdb)
     write_tsv(f"{pdb_id}\tOK\t{len(regular_mesh.vertices)}\t{len(regular_mesh.faces)}")
 
 except Exception:

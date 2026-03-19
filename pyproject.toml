@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "arcadia-apb[modal]>=0.3.0",
+    "biopython>=1.86",
     "ipython>=9.11.0",
     "numpy>=2.4.3",
     "pandas>=3.0.1",
@@ -14,4 +15,9 @@ dependencies = [
     "rdkit>=2025.9.6",
     "scipy>=1.17.1",
     "typer>=0.24.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
 ]
