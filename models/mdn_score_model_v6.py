@@ -206,7 +206,7 @@ class TensorProductScoreModelV6(torch.nn.Module):
 
         if self.mdn_mode:
             # only mdn model without atom type and bond type predict 
-            if self.num_conv_layers >=2:
+            if self.num_conv_layers >= 3:
                 mdn_hidden_dim = 4 * ns
             else:
                 mdn_hidden_dim = 2 * ns

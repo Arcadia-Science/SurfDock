@@ -7,6 +7,7 @@ from functools import partial
 
 import wandb
 import torch
+from torch.utils.tensorboard import SummaryWriter
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 import resource
@@ -23,7 +24,7 @@ from utils.utils import save_yaml_file, get_optimizer_and_scheduler, get_model, 
 import datetime
 from loguru import logger
 # from models.score_model_mdn_energy import TensorProductEnergyModel
-def train(args, model, optimizer, scheduler,  ema_weights,train_loader, val_loader, t_to_sigma, run_dir,accelerator):
+def train(args, model, optimizer, scheduler,  ema_weights,train_loader, val_loader, t_to_sigma, run_dir,accelerator, tb_writer=None):
     best_val_loss = math.inf
     best_val_inference_value = math.inf if args.inference_earlystop_goal == 'min' else 0
     best_epoch = 0
@@ -96,6 +97,9 @@ def train(args, model, optimizer, scheduler,  ema_weights,train_loader, val_load
         
         if args.wandb and accelerator.is_local_main_process:
             wandb.log(logs, step=epoch + 1)
+        if tb_writer is not None:
+            for k, v in logs.items():
+                tb_writer.add_scalar(k, v, epoch + 1)
        
 
         if args.inference_earlystop_metric in logs.keys() and \
@@ -140,6 +144,8 @@ def train(args, model, optimizer, scheduler,  ema_weights,train_loader, val_load
         logger.info("Best inference metric {} on Epoch {}".format(best_val_inference_value, best_val_inference_epoch))
     if args.wandb:
         wandb.finish()
+    if tb_writer is not None:
+        tb_writer.close()
 
 # from accelerate.utils import DummyOptim, DummyScheduler, set_seed
 def main_function():
@@ -219,7 +225,8 @@ def main_function():
     yaml_file_name = os.path.join(run_dir, 'model_parameters.yml')
     save_yaml_file(yaml_file_name, args.__dict__)
     args.device = device
-    train(args, model, optimizer, scheduler, ema_weights,train_loader, val_loader, t_to_sigma, run_dir,accelerator)
+    tb_writer = SummaryWriter(log_dir=os.path.join(run_dir, "tb")) if accelerator.is_local_main_process else None
+    train(args, model, optimizer, scheduler, ema_weights,train_loader, val_loader, t_to_sigma, run_dir,accelerator, tb_writer=tb_writer)
     # wandb.finish()
 if __name__ == '__main__':
     from accelerate import Accelerator

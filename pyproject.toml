@@ -29,6 +29,9 @@ dependencies = [
     "torch-cluster>=1.6.3",
     "torch-spline-conv>=1.2.2",
     "spyrmsd>=0.9.0",
+    "optuna>=4.8.0",
+    "tensorboard>=2.20.0",
+    "setuptools<82",
 ]
 
 [[tool.uv.index]]

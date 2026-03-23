@@ -12,6 +12,7 @@ rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (64000, rlimit[1]))
 
 import yaml
+from loguru import logger
 
 from utils.diffusion_utils import t_to_sigma as t_to_sigma_compl
 from datasets.pdbbind import construct_loader
@@ -29,7 +30,7 @@ def train(args, model, optimizer, scheduler,  ema_weights,train_loader, val_load
     patience_count = 0
     logger.info("Starting training...")
     for epoch in range(args.n_epochs):
-        if epoch % 5 == 0: logger.info("Run name: {}".foramt(args.run_name))
+        if epoch % 5 == 0: logger.info("Run name: {}".format(args.run_name))
         logs = {}
         #################trainging ########################
         train_losses = train_mdn_epoch(model, train_loader, optimizer, device,accelerator,ema_weights)
@@ -38,7 +39,7 @@ def train(args, model, optimizer, scheduler,  ema_weights,train_loader, val_load
             nowtime = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             logger.info(f"epoch【{epoch}】@{nowtime} --> train_metric=")
             logger.info("Epoch {}: Training loss {:.4f}"
-                .format(epoch, train_losses['loss'],flush=True))
+                .format(epoch, train_losses['loss']))
         # accelerator.wait_for_everyone()
         # unwrapped_model = accelerator.unwrap_model(model)
         ema_weights.store(model.parameters())
@@ -148,7 +149,10 @@ def main_function():
                 config=args
             )
             # wandb.log({'numel': numel})
-    # construct loader
+    run_dir = os.path.join(args.log_dir, args.run_name)
+    os.makedirs(run_dir, exist_ok=True)
+    logger.add(os.path.join(run_dir, 'LogFile.log'), rotation='100 MB')
+    logger.info(f'Args:{args}')
     t_to_sigma = partial(t_to_sigma_compl, args=args)
     train_loader, val_loader = construct_loader(args, t_to_sigma)
     model = get_model(args, device, t_to_sigma=t_to_sigma,model_type = args.model_type)
@@ -179,8 +183,6 @@ def main_function():
     numel = sum([p.numel() for p in model.parameters()])
     logger.info(f'Model with {numel} parameters')
 
-    # record parameters
-    run_dir = os.path.join(args.log_dir, args.run_name)
     yaml_file_name = os.path.join(run_dir, 'model_parameters.yml')
     save_yaml_file(yaml_file_name, args.__dict__)
     args.device = device
