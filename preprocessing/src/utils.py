@@ -1,5 +1,5 @@
-from biotite.sequence.seqtypes import ProteinSequence
 from biotite.structure.atoms import AtomArray
+from biotite.structure.info import one_letter_code
 from biotite.structure.residues import get_residue_starts, get_residues
 
 
@@ -9,7 +9,7 @@ def get_chain_ids(structure: AtomArray) -> list[str]:
 
 def get_chain_sequence(chain_atoms: AtomArray) -> str:
     _, amino_acids = get_residues(chain_atoms)
-    return str(ProteinSequence(amino_acids))
+    return "".join(one_letter_code(str(aa)) or "X" for aa in amino_acids)
 
 
 def get_chain_residue_keys(chain_atoms: AtomArray) -> list[tuple[int, str]]:

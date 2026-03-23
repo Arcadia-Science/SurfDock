@@ -144,3 +144,13 @@ def test_ins_code_map_pocket_to_full_indices():
     full = load_structure(INS_CODE_CLEAN_PDB)
     pocket = load_structure(INS_CODE_POCKET_PDB)
     indices_per_chain = map_pocket_to_full_indices(full, pocket)
+
+
+def test_modified_amino_acid_sequence():
+    structure = load_structure(INS_CODE_CLEAN_PDB)
+    structure = structure[struc.filter_amino_acids(structure)]
+    chain_i = structure[structure.chain_id == "I"]
+    seq = get_chain_sequence(chain_i)
+    assert isinstance(seq, str)
+    assert len(seq) > 0
+    assert all(c.isalpha() for c in seq)

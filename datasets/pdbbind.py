@@ -134,7 +134,7 @@ class PDBBind(Dataset):
     def __init__(self, root, transform=None, cache_path='data/cache', split_path='data/', limit_complexes=0,
                  receptor_radius=30, num_workers=1, c_alpha_max_neighbors=None, popsize=15, maxiter=15,
                  matching=True, keep_original=False, max_lig_size=None, remove_hs=False, num_conformers=1, all_atoms=False,
-                 atom_radius=5, atom_max_neighbors=None, esm_embeddings_path=None, require_ligand=False,
+                 atom_radius=5, atom_max_neighbors=None, esm_embeddings_path=None, esm_model_name='esm2_3B', require_ligand=False,
                  ligands_list=None, protein_path_list=None, ligand_descriptions=None, keep_local_structures=False,surface_path = None):
 
         super(PDBBind, self).__init__(root, transform)
@@ -149,6 +149,7 @@ class PDBBind(Dataset):
         self.c_alpha_max_neighbors = c_alpha_max_neighbors
         self.remove_hs = remove_hs
         self.esm_embeddings_path = esm_embeddings_path
+        self.esm_model_name = esm_model_name
         self.require_ligand = require_ligand
         self.protein_path_list = protein_path_list
         self.ligand_descriptions = ligand_descriptions
@@ -257,31 +258,14 @@ class PDBBind(Dataset):
             complex_names_all = complex_names_all[:self.limit_complexes]
         logger.info(f'Loading {len(complex_names_all)} complexes.')
         if self.esm_embeddings_path is not None:
-            # map protein name to embeddings , such as 5y80_protein_processed -> 1028 embeddings vectors
-            id_to_embeddings = torch.load(self.esm_embeddings_path)
-            # chain_embeddings_dictlist = defaultdict(list)
-            # for key, embedding in id_to_embeddings.items():
-            #     key_name = key # key_name is the protein name like 5y80
-            #     if key_name in complex_names_all:
-            #         chain_embeddings_dictlist[key_name].append(embedding)
             lm_embeddings_chains_all = []
-            embedding_names = list(id_to_embeddings.keys())
-            complex_names_all = [name for name in embedding_names if name.split('_')[0] in set(complex_names_all)]
-            # complex_names_all = list(set(complex_names_all).intersection(set(embedding_names)))
-            # logger.info('complex_names_all: ',len(complex_names_all))
-            # logger.info(complex_names_all)
-            complex_names_all_new = []
+            complex_names_filtered = []
             for name in complex_names_all:
-                try:
-                    
-                    lm_embeddings_chains_all.append(id_to_embeddings[name])
-                    complex_names_all_new.append(name.split('_')[0])
-                except:
-                    # complex_names_all.remove(name.split('_')[0])
-                    continue
-            assert len(complex_names_all) == len(lm_embeddings_chains_all),'len(complex_names_all) {}!= {}len(lm_embeddings_chains_all)'.format(len(complex_names_all),len(lm_embeddings_chains_all))
-                    # lm_embeddings_chains_all.append(None)
-            complex_names_all = complex_names_all_new
+                emb_path = os.path.join(self.esm_embeddings_path, name, f'{name}_protein_processed_8A_{self.esm_model_name}.pt')
+                if os.path.exists(emb_path):
+                    lm_embeddings_chains_all.append(torch.load(emb_path))
+                    complex_names_filtered.append(name)
+            complex_names_all = complex_names_filtered
         else:
             lm_embeddings_chains_all = [None] * len(complex_names_all)
 
