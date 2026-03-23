@@ -174,7 +174,7 @@ class ScreenDataset(Dataset):
 
                 logger.warning('No reference ligand was provided. Using the first ligand in the list as reference.')
                 self.ref_ligand = ligs[0]
-            rec, rec_coords, c_alpha_coords, n_coords, c_coords, lm_embeddings = extract_receptor_structure(copy.deepcopy(rec_model), self.ref_ligand,save_file=pure_pocket_path, lm_embedding_chains=lm_embedding_chains)
+            rec, rec_coords, c_alpha_coords, n_coords, c_coords, lm_embeddings = extract_receptor_structure(copy.deepcopy(rec_model), self.ref_ligand, lm_embedding_chains=lm_embedding_chains)
             if lm_embeddings is not None and c_alpha_coords is not None and len(c_alpha_coords) != len(lm_embeddings):
                 logger.info(f'LM embeddings for complex {name} did not have the right length for the protein. Skipping {name}.')
             mda_rec_model = mda.Universe(pure_pocket_path)

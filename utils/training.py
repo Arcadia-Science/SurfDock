@@ -105,7 +105,7 @@ class AverageMeter():
 def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerator,ema_weights):
     model.train()
     # if mdn_mode:
-        # 
+        #
     meter = AverageMeter(['loss', 'tr_loss', 'rot_loss', 'tor_loss', 'tr_base_loss', 'rot_base_loss', 'tor_base_loss'])
     pbar = tqdm(loader, total=len(loader),disable=not accelerator.is_local_main_process)
     for data in pbar:

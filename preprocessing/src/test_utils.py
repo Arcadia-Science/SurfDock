@@ -3,6 +3,9 @@ from pathlib import Path
 import biotite.structure as struc
 from apb.structure.convert import load_structure
 
+import MDAnalysis as mda
+import numpy as np
+
 from preprocessing.src.utils import (
     get_chain_ids,
     get_chain_sequence,
@@ -154,3 +157,71 @@ def test_modified_amino_acid_sequence():
     assert isinstance(seq, str)
     assert len(seq) > 0
     assert all(c.isalpha() for c in seq)
+
+
+PURE_PDB_TEST_CASES = [
+    ("10gs_8A", TEST_DATA / "10gs_protein_processed_8A.pdb"),
+    ("1aqc_8A_MSE_selenium", TEST_DATA / "1aqc_protein_processed_8A.pdb"),
+    ("1ai6_8A_O_valence3", TEST_DATA / "1ai6_protein_processed_8A.pdb"),
+    ("1gt1_8A_C_valence5", TEST_DATA / "1gt1_protein_processed_8A.pdb"),
+    ("4x3i_8A_element_E", TEST_DATA / "4x3i_protein_processed_8A.pdb"),
+    ("4xqu_10A_O_valence3", TEST_DATA / "4xqu_protein_processed_10A.pdb"),
+    ("4yc8_8A_O_valence3", TEST_DATA / "4yc8_protein_processed_8A.pdb"),
+    ("5ugd_8A_C_valence5", TEST_DATA / "5ugd_protein_processed_8A.pdb"),
+    ("5iq6_10A_H_valence2", TEST_DATA / "5iq6_protein_processed_10A.pdb"),
+    ("6i4x_8A_N_valence4", TEST_DATA / "6i4x_protein_processed_8A.pdb"),
+]
+
+
+def _make_pure(pocket_pdb):
+    from preprocessing.src.generate_pure_pdbs import generate_pure_pdb
+
+    pure = pocket_pdb.with_suffix(".test_pure.pdb")
+    pure.unlink(missing_ok=True)
+    generate_pure_pdb(pocket_pdb, pure)
+    return pure
+
+
+def test_pure_pdb_strips_all_hydrogens():
+    for name, pocket_pdb in PURE_PDB_TEST_CASES:
+        pure = _make_pure(pocket_pdb)
+        with open(pocket_pdb) as f:
+            orig_h = sum(
+                1
+                for l in f
+                if l.startswith(("ATOM", "HETATM")) and l[76:78].strip() == "H"
+            )
+        with open(pure) as f:
+            pure_h = sum(
+                1
+                for l in f
+                if l.startswith(("ATOM", "HETATM")) and l[76:78].strip() == "H"
+            )
+        assert orig_h > 0, f"{name}: expected hydrogens in input"
+        assert pure_h == 0, f"{name}: expected no hydrogens in output, got {pure_h}"
+        pure.unlink()
+
+
+def test_pure_pdb_preserves_heavy_atoms():
+    for name, pocket_pdb in PURE_PDB_TEST_CASES:
+        pure = _make_pure(pocket_pdb)
+        mda_orig = mda.Universe(str(pocket_pdb))
+        mda_pure = mda.Universe(str(pure))
+        orig_heavy = mda_orig.select_atoms("not element H")
+        pure_all = mda_pure.select_atoms("all")
+        assert len(orig_heavy) == len(pure_all), (
+            f"{name}: atom count {len(orig_heavy)} vs {len(pure_all)}"
+        )
+        assert list(orig_heavy.names) == list(pure_all.names), (
+            f"{name}: atom names differ"
+        )
+        assert list(orig_heavy.resnames) == list(pure_all.resnames), (
+            f"{name}: resnames differ"
+        )
+        assert list(orig_heavy.resids) == list(pure_all.resids), (
+            f"{name}: resids differ"
+        )
+        assert np.allclose(orig_heavy.positions, pure_all.positions, atol=0.01), (
+            f"{name}: coords differ"
+        )
+        pure.unlink()

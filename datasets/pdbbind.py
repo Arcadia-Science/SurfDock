@@ -2,6 +2,7 @@ import binascii
 import glob
 import hashlib
 import os
+import time
 # import pickle
 import _pickle as pickle # use cPickle to speed up
 import MDAnalysis as mda
@@ -36,7 +37,7 @@ class NoiseTransformBERT(BaseTransform):
         self.t_to_sigma = t_to_sigma
         self.no_torsion = no_torsion
         self.all_atom = all_atom
-    def __call__(self, data):
+    def forward(self, data):
         t = np.random.uniform()
         # t_rot = np.random.uniform()
         # t_tor = np.random.uniform()
@@ -105,7 +106,7 @@ class NoiseTransform(BaseTransform):
         self.no_torsion = no_torsion
         self.all_atom = all_atom
 
-    def __call__(self, data):
+    def forward(self, data):
         t = np.random.uniform()
         t_tr, t_rot, t_tor = t, t, t
         return self.apply_noise(data, t_tr, t_rot, t_tor)
@@ -134,7 +135,7 @@ class PDBBind(Dataset):
     def __init__(self, root, transform=None, cache_path='data/cache', split_path='data/', limit_complexes=0,
                  receptor_radius=30, num_workers=1, c_alpha_max_neighbors=None, popsize=15, maxiter=15,
                  matching=True, keep_original=False, max_lig_size=None, remove_hs=False, num_conformers=1, all_atoms=False,
-                 atom_radius=5, atom_max_neighbors=None, esm_embeddings_path=None, esm_model_name='esm2_3B', require_ligand=False,
+                 atom_radius=5, atom_max_neighbors=None, esm_embeddings_path=None, esm_model_name='esm2_3B', pocket_cutoff='8A', require_ligand=False,
                  ligands_list=None, protein_path_list=None, ligand_descriptions=None, keep_local_structures=False,surface_path = None):
 
         super(PDBBind, self).__init__(root, transform)
@@ -150,6 +151,7 @@ class PDBBind(Dataset):
         self.remove_hs = remove_hs
         self.esm_embeddings_path = esm_embeddings_path
         self.esm_model_name = esm_model_name
+        self.pocket_cutoff = pocket_cutoff
         self.require_ligand = require_ligand
         self.protein_path_list = protein_path_list
         self.ligand_descriptions = ligand_descriptions
@@ -164,7 +166,8 @@ class PDBBind(Dataset):
                                                         f'_recRad{self.receptor_radius}_recMax{self.c_alpha_max_neighbors}'
                                             + ('' if not all_atoms else f'_atomRad{atom_radius}_atomMax{atom_max_neighbors}')
                                             + ('' if not matching or num_conformers == 1 else f'_confs{num_conformers}')
-                                            + ('' if self.esm_embeddings_path is None else f'_esmEmbeddings')
+                                            + ('' if self.esm_embeddings_path is None else f'_{self.esm_model_name}')
+                                            + f'_pocket{self.pocket_cutoff}'
                                             + ('' if not keep_local_structures else f'_keptLocalStruct')
                                             + ('' if protein_path_list is None or ligand_descriptions is None else str(binascii.crc32(''.join(ligand_descriptions + protein_path_list).encode()))))
         
@@ -261,7 +264,7 @@ class PDBBind(Dataset):
             lm_embeddings_chains_all = []
             complex_names_filtered = []
             for name in complex_names_all:
-                emb_path = os.path.join(self.esm_embeddings_path, name, f'{name}_protein_processed_8A_{self.esm_model_name}.pt')
+                emb_path = os.path.join(self.esm_embeddings_path, name, f'{name}_protein_processed_{self.pocket_cutoff}_{self.esm_model_name}.pt')
                 if os.path.exists(emb_path):
                     lm_embeddings_chains_all.append(torch.load(emb_path))
                     complex_names_filtered.append(name)
@@ -423,11 +426,13 @@ class PDBBind(Dataset):
                 pickle.dump((rdkit_ligands), f,protocol=-1)
     def get_complex(self, par):
         name, lm_embedding_chains, ligand, ligand_description = par
+        t_total = time.perf_counter()
         if not os.path.exists(os.path.join(self.pdbbind_dir, name)) and ligand is None:
             logger.info(os.path.join(self.pdbbind_dir, name))
             logger.info("Folder not found", name)
             logger.info("Skipping", name)
             return [], []
+        t0 = time.perf_counter()
         if ligand is not None:
             rec_model = parse_pdb_from_path(name)
             pure_pocket_path = os.path.join(os.path.splitext(name)[0],'_pure.pdb')
@@ -436,16 +441,16 @@ class PDBBind(Dataset):
             ligs = [ligand]
         else:
             try:
-                rec_path = glob.glob(f'{self.surface_path}/{name}/*.pdb')[0]
+                rec_path = os.path.join(self.surface_path, name, f'{name}_protein_processed_{self.pocket_cutoff}.pdb')
                 rec_model = parse_pdb_from_path(rec_path)
-                pure_pocket_path = rec_path.replace('.pdb','_pure.pdb')
-                # mda_rec_model = mda.Universe(os.path.join(self.pdbbind_dir, name, f'{name}_pocket.pdb'))
+                pure_pocket_path = rec_path.replace('.pdb', '_pure.pdb')
             except Exception as e:
                 logger.info(f'Skipping {name} because of the error:')
                 logger.info(e)
                 return [], []
             ligs = [read_abs_file_mol(os.path.join(self.pdbbind_dir, name,f'{name}_ligand.sdf'), remove_hs=False, sanitize=True)]
             # ligs = read_mols(self.pdbbind_dir, name, remove_hs=False)
+        t_parse_input = time.perf_counter() - t0
         complex_graphs = []
         failed_indices = []
         if len(ligs)==0:
@@ -459,23 +464,30 @@ class PDBBind(Dataset):
             complex_graph = HeteroData()
             complex_graph['name'] = name
             try:
+                t0 = time.perf_counter()
                 get_lig_graph_with_matching(lig, complex_graph, self.popsize, self.maxiter, self.matching, self.keep_original,
                                             self.num_conformers, remove_hs=self.remove_hs)
+                t_lig_graph = time.perf_counter() - t0
 
-                rec, rec_coords, c_alpha_coords, n_coords, c_coords, lm_embeddings = extract_receptor_structure(copy.deepcopy(rec_model), lig, save_file=pure_pocket_path,lm_embedding_chains=lm_embedding_chains)
+                t0 = time.perf_counter()
+                rec, rec_coords, c_alpha_coords, n_coords, c_coords, lm_embeddings = extract_receptor_structure(copy.deepcopy(rec_model), lig, lm_embedding_chains=lm_embedding_chains)
+                t_extract_rec = time.perf_counter() - t0
                 if lm_embeddings is not None and c_alpha_coords is not None and len(c_alpha_coords) != len(lm_embeddings):
                     assert lm_embeddings is not None and c_alpha_coords is not None and len(c_alpha_coords) == len(lm_embeddings),'length error'
                     logger.info(f'LM embeddings for complex {name} did not have the right length for the protein. Skipping {name}.')
                     failed_indices.append(i)
                     continue
+                t0 = time.perf_counter()
                 mda_rec_model = mda.Universe(pure_pocket_path)
                 # raise 'pure_pocket_path : {}'.format(pure_pocket_path)
                 get_rec_graph(mda_rec_model, rec_coords, c_alpha_coords, n_coords, c_coords, complex_graph, rec_radius=self.receptor_radius,
                                 c_alpha_max_neighbors=self.c_alpha_max_neighbors, all_atoms=self.all_atoms,
                                 atom_radius=self.atom_radius, atom_max_neighbors=self.atom_max_neighbors, remove_hs=self.remove_hs, lm_embeddings=lm_embeddings)
+                t_rec_graph = time.perf_counter() - t0
             except Exception as e:
-                logger.info(f'Skipping {name} because of the rec_model parser error:')
-                logger.info(e)
+                import traceback
+                logger.info(f'Skipping {name} because of the error:')
+                logger.info(traceback.format_exc())
                 failed_indices.append(i)
                 continue
             protein_center = torch.mean(complex_graph['receptor'].pos, dim=0, keepdim=True)
@@ -492,14 +504,16 @@ class PDBBind(Dataset):
             ligand_center = torch.mean(complex_graph['ligand'].pos, dim=0, keepdim=True)
             complex_graph.original_center = protein_center
             complex_graph.original_ligand_center = ligand_center + protein_center
-            # add surface
+            t_surface = 0.0
             if self.surface_path is not None:
                 try:
-                    if len(glob.glob(f'{self.surface_path}/{name}/*.ply'))==0:
+                    ply_path = os.path.join(self.surface_path, name, f'{name}_protein_processed_{self.pocket_cutoff}.ply')
+                    if not os.path.exists(ply_path):
                         logger.info('no surface file for ',name)
                         failed_indices.append(i)
                         continue
-                    with open(glob.glob(f'{self.surface_path}/{name}/*.ply')[0], 'rb') as f:
+                    t0 = time.perf_counter()
+                    with open(ply_path, 'rb') as f:
                         data = PlyData.read(f)
                     features = ([torch.tensor(data['vertex'][axis.name]) for axis in data['vertex'].properties if axis.name not in ['nx', 'ny', 'nz'] ])
                     pos = torch.stack(features[:3], dim=-1)
@@ -514,17 +528,21 @@ class PDBBind(Dataset):
                     data = Data(x=features, pos=pos, face=face)
                     data = FaceToEdge()(data)
                     data = Cartesian(cat=False)(data)
+                    t_surface = time.perf_counter() - t0
                     complex_graph['surface'].pos = data.pos
                     complex_graph['surface'].x = data.x
                     complex_graph['surface','surface_edge','surface'].edge_index = data.edge_index
                     complex_graph['surface','surface_edge','surface'].edge_attr = data.edge_attr
                 except Exception as e:
+                    import traceback
                     logger.info(f'Skipping {name} because of the surface error:')
-                    logger.info(e)
+                    logger.info(traceback.format_exc())
                     failed_indices.append(i)
                     continue
             # surface end
             complex_graphs.append(complex_graph)
+            t_complex_total = time.perf_counter() - t_total
+            logger.info(f'[TIMING] {name}: total={t_complex_total:.3f}s | parse_input={t_parse_input:.3f}s lig_graph={t_lig_graph:.3f}s extract_rec={t_extract_rec:.3f}s rec_graph={t_rec_graph:.3f}s surface={t_surface:.3f}s')
         for idx_to_delete in sorted(failed_indices, reverse=True):
             del ligs[idx_to_delete]
 
@@ -569,7 +587,8 @@ def construct_loader(args, t_to_sigma):
                    'matching': args.matching, 'popsize': args.matching_popsize, 'maxiter': args.matching_maxiter,
                    'num_workers': args.num_workers, 'all_atoms': args.all_atoms,
                    'atom_radius': args.atom_radius, 'atom_max_neighbors': args.atom_max_neighbors,
-                   'esm_embeddings_path': args.esm_embeddings_path,'surface_path':args.surface_path}
+                   'esm_embeddings_path': args.esm_embeddings_path, 'esm_model_name': args.esm_model_name,
+                   'pocket_cutoff': args.pocket_cutoff, 'surface_path':args.surface_path}
 
     train_dataset = PDBBind(cache_path=args.cache_path, split_path=args.split_train, keep_original=True,
                             num_conformers=args.num_conformers, **common_args)
@@ -578,8 +597,9 @@ def construct_loader(args, t_to_sigma):
     # loader_class = DataListLoader if torch.cuda.is_available() else DataLoader
     loader_class = DataLoaderX
     # prefetch_factor = 0
-    train_loader = loader_class(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_dataloader_workers,shuffle=True, pin_memory=args.pin_memory,prefetch_factor = 2,drop_last = True)
-    val_loader = loader_class(dataset=val_dataset, batch_size=args.batch_size, num_workers=args.num_dataloader_workers,shuffle=True, pin_memory=args.pin_memory,prefetch_factor = 2)
+    prefetch = 2 if args.num_dataloader_workers > 0 else None
+    train_loader = loader_class(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_dataloader_workers,shuffle=True, pin_memory=args.pin_memory,prefetch_factor=prefetch,drop_last = True)
+    val_loader = loader_class(dataset=val_dataset, batch_size=args.batch_size, num_workers=args.num_dataloader_workers,shuffle=True, pin_memory=args.pin_memory,prefetch_factor=prefetch)
 
     return train_loader, val_loader
 

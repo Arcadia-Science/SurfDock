@@ -7,8 +7,10 @@ from utils.torsion import modify_conformer_torsion_angles
 from scipy.spatial.transform import Rotation as R
 import warnings
 # from datasets.process_mols import write_mol_with_coords
-from force_optimize.minimize_utils import UpdateGrpah,GetfixedPDB,GetFFGenerator
-from openmm.app import Modeller
+def _lazy_force_optimize():
+    from force_optimize.minimize_utils import UpdateGrpah, GetfixedPDB, GetFFGenerator
+    from openmm.app import Modeller
+    return UpdateGrpah, GetfixedPDB, GetFFGenerator, Modeller
 from joblib import Parallel,delayed
 from tqdm import tqdm
 from loguru import logger
@@ -41,6 +43,7 @@ def randomize_position(data_list, no_torsion, no_random, tr_sigma_max,ligand_to_
                 complex_graph['ligand'].pos += tr_update
 
 def inferenceFFOptimize(data_list,args,receptor_path,N=40):
+    UpdateGrpah, GetfixedPDB, GetFFGenerator, Modeller = _lazy_force_optimize()
     # loaded ligand docking pose and add Hs
     fixer = GetfixedPDB(receptor_path)
     modeller = Modeller(fixer.topology, fixer.positions)

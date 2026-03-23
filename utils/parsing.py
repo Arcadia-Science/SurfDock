@@ -56,6 +56,8 @@ def parse_train_args():
     parser.add_argument('--remove_hs', action='store_true', default=False, help='remove Hs')
     parser.add_argument('--num_conformers', type=int, default=1, help='Number of conformers to match to each ligand')
     parser.add_argument('--esm_embeddings_path', type=str, default=None, help='If this is set then the LM embeddings at that path will be used for the receptor features')
+    parser.add_argument('--esm_model_name', type=str, default='esm2_3B', help='Short name of ESM model used for embeddings (e.g. esm2_3B, esm2_650M)')
+    parser.add_argument('--pocket_cutoff', type=str, default='8A', help='Pocket distance cutoff used for surface/pocket files (e.g. 8A, 10A)')
     parser.add_argument('--surface_path', type=str, default=None, help='surface information path')
     # Diffusion
     # transformStyle

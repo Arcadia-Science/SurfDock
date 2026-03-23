@@ -263,9 +263,7 @@ def parse_pdb_from_path(path):
     return rec
 
 from Bio.PDB import PDBIO
-def extract_receptor_structure(rec, lig, save_file,lm_embedding_chains=None):
-    if os.path.exists(save_file):
-        return None, None, None, None, None, lm_embedding_chains
+def extract_receptor_structure(rec, lig, lm_embedding_chains=None):
     conf = lig.GetConformer()
     lig_coords = conf.GetPositions()
     min_distances = []
@@ -358,11 +356,6 @@ def extract_receptor_structure(rec, lig, save_file,lm_embedding_chains=None):
     if lm_embedding_chains is not None:
         logger.info(f'Found {len(lm_embedding_chains)} LM embeddings for {len(c_alpha_coords)} residues')
         assert len(lm_embedding_chains) == len(n_coords)
-    io = PDBIO()
-    io.set_structure(rec)
-    io.save(save_file)
-    mol = Chem.MolFromPDBFile(save_file)
-    Chem.MolToPDBFile(mol, save_file)
     return rec, coords, c_alpha_coords, n_coords, c_coords, lm_embedding_chains
 
 def one_of_k_encoding_unk(x, allowable_set):

@@ -67,7 +67,7 @@ def train(args, model, optimizer, scheduler,  ema_weights,train_loader, val_load
             logger.info("Epoch {}: Validation loss {:.4f}  tr {:.4f}   rot {:.4f}   tor {:.4f}"
                 .format(epoch, val_losses['loss'], val_losses['tr_loss'], val_losses['rot_loss'], val_losses['tor_loss']))
         if args.val_inference_freq != None and (epoch + 1) % args.val_inference_freq == 0 and (epoch + 1) > args.skip_inference_freq:
-            
+
             inf_metrics = inference_epoch_parallel(model, val_inference_datalist, device, t_to_sigma, args,accelerator)
             if accelerator.is_local_main_process:
                 nowtime = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
