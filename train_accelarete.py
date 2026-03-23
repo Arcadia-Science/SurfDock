@@ -37,7 +37,8 @@ def train(args, model, optimizer, scheduler,  ema_weights,train_loader, val_load
     val_inference_datalist = val_loader.dataset.get_complexs_list(args.num_inference_complexes)
     if accelerator.is_local_main_process:
         logger.info(f'Size of dataset is : {len(val_inference_datalist)}.')
-    scheduler.scheduler.num_bad_epochs = 1
+    if scheduler is not None:
+        scheduler.scheduler.num_bad_epochs = 1
     for epoch in range(args.n_epochs):
         if accelerator.is_local_main_process:
             if epoch % 5 == 0: logger.info(f"Run name: {args.run_name}")
@@ -121,7 +122,7 @@ def train(args, model, optimizer, scheduler,  ema_weights,train_loader, val_load
             else:
 
                 scheduler.step(-1*val_losses['loss'])
-            if scheduler.scheduler.num_bad_epochs < accelerator.num_processes:
+            if scheduler is not None and scheduler.scheduler.num_bad_epochs < accelerator.num_processes:
                 scheduler.scheduler.num_bad_epochs = 1
 
         if accelerator.is_local_main_process:

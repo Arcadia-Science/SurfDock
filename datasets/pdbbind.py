@@ -3,6 +3,7 @@ import glob
 import hashlib
 import os
 import time
+from pathlib import Path
 # import pickle
 import _pickle as pickle # use cPickle to speed up
 import MDAnalysis as mda
@@ -184,26 +185,6 @@ class PDBBind(Dataset):
             else:
                 self.inference_preprocessing()
         logger.info('Training dataset size: {}'.format(len(glob.glob(os.path.join(self.full_cache_path,'heterographs_*.pkl')))))
-        # logger.info('loading data from memory: ', os.path.join(self.full_cache_path, "heterographs.pkl"))
-
-        # with open(os.path.join(self.full_cache_path, "heterographs.pkl"), 'rb') as f:
-        #     self.complex_graphs = pickle.load(f)
-        # print_statistics(self.complex_graphs)
-        # logger.info('loaded data from memory: ', len(self.complex_graphs))
-        # # filter out complexes with ligand not meet required in tarinset!
-        # if 'timesplit' not in os.path.basename(self.split_path):
-
-        #     filter_names = [i.strip() for i in open('/home/caoduanhua/DeepLearningForDock/DiffDockForScreen/diffScreen/data/pdbbind_pdbscreen/splits/data_filter_ligpre').readlines()]
-        #     logger.info('only ligpre success data for train ')
-        #     self.complex_graphs = [data for data in self.complex_graphs if data.name in filter_names]
-        #     logger.info('only ligpre success data for train: nums: ',len(self.complex_graphs))
-
-        # logger.info('loaded data from memory: ', len(self.complex_graphs))
-        # if require_ligand:
-        #     logger.info('loading ligand data from memory: ', os.path.join(self.full_cache_path, "rdkit_ligands.pkl"))
-        #     with open(os.path.join(self.full_cache_path, "rdkit_ligands.pkl"), 'rb') as f:
-        #         self.rdkit_ligands = pickle.load(f)
-        #     logger.info('loaded ligand data from memory!')
 
     def len(self):
         return len(glob.glob(os.path.join(self.full_cache_path,'heterographs_*.pkl')))
@@ -272,63 +253,37 @@ class PDBBind(Dataset):
         else:
             lm_embeddings_chains_all = [None] * len(complex_names_all)
 
+        cache = Path(self.full_cache_path)
         if self.num_workers > 1:
-            # running preprocessing in parallel on multiple workers and saving the progress every 1000 complexes
+            idx = 0
             for i in range(len(complex_names_all)//1000+1):
-                if os.path.exists(os.path.join(self.full_cache_path, f"heterographs{i}.pkl")):
+                chunk_start = idx
+                if (cache / f"heterographs_{1000*i}.pkl").exists():
+                    idx += len(list(complex_names_all[1000*i:1000*(i+1)]))
                     continue
                 complex_names = complex_names_all[1000*i:1000*(i+1)]
                 lm_embeddings_chains = lm_embeddings_chains_all[1000*i:1000*(i+1)]
-                complex_graphs, rdkit_ligands = [], []
-                # if self.num_workers > 1:
-                #     p = Pool(self.num_workers, maxtasksperchild=1)
-                #     p.__enter__()
                 with tqdm(total=len(complex_names), desc=f'loading complexes {i}/{len(complex_names_all)//1000+1}') as pbar:
-                    # map_fn = p.imap_unordered if self.num_workers > 1 else map
                     t_list = Parallel(n_jobs=self.num_workers, backend="multiprocessing")(delayed(self.get_complex)(x) for x in tqdm(zip(complex_names, lm_embeddings_chains, [None] * len(complex_names), [None] * len(complex_names)),total=len(complex_names)))
                     for t in t_list:
-                        complex_graphs.extend(t[0])
-                        rdkit_ligands.extend(t[1])
+                        for graph, lig in zip(t[0], t[1]):
+                            with open(cache / f"heterographs_{idx}.pkl", "wb") as f:
+                                pickle.dump(graph, f, protocol=-1)
+                            with open(cache / f"rdkit_ligands_{idx}.pkl", "wb") as f:
+                                pickle.dump(lig, f, protocol=-1)
+                            idx += 1
                         pbar.update()
-
-                    # for t in map_fn(self.get_complex, zip(complex_names, lm_embeddings_chains, [None] * len(complex_names), [None] * len(complex_names))):
-                    #     complex_graphs.extend(t[0])
-                    #     rdkit_ligands.extend(t[1])
-                    # pbar.update()
-                # if self.num_workers > 1: p.__exit__(None, None, None)
-
-                with open(os.path.join(self.full_cache_path, f"heterographs{i}.pkl"), 'wb') as f:
-                    pickle.dump((complex_graphs), f,protocol=-1)
-                with open(os.path.join(self.full_cache_path, f"rdkit_ligands{i}.pkl"), 'wb') as f:
-                    pickle.dump((rdkit_ligands), f,protocol=-1)
-
-            complex_graphs_all = []
-            for i in range(len(complex_names_all)//1000+1):
-                with open(os.path.join(self.full_cache_path, f"heterographs{i}.pkl"), 'rb') as f:
-                    l = pickle.load(f)
-                    complex_graphs_all.extend(l)
-            with open(os.path.join(self.full_cache_path, f"heterographs.pkl"), 'wb') as f:
-                pickle.dump((complex_graphs_all), f,protocol=-1)
-
-            rdkit_ligands_all = []
-            for i in range(len(complex_names_all) // 1000 + 1):
-                with open(os.path.join(self.full_cache_path, f"rdkit_ligands{i}.pkl"), 'rb') as f:
-                    l = pickle.load(f)
-                    rdkit_ligands_all.extend(l)
-            with open(os.path.join(self.full_cache_path, f"rdkit_ligands.pkl"), 'wb') as f:
-                pickle.dump((rdkit_ligands_all), f,protocol=-1)
         else:
-            complex_graphs, rdkit_ligands = [], []
+            idx = 0
             with tqdm(total=len(complex_names_all), desc='loading complexes') as pbar:
                 for t in map(self.get_complex, zip(complex_names_all, lm_embeddings_chains_all, [None] * len(complex_names_all), [None] * len(complex_names_all))):
-
-                    complex_graphs.extend(t[0])
-                    rdkit_ligands.extend(t[1])
+                    for graph, lig in zip(t[0], t[1]):
+                        with open(cache / f"heterographs_{idx}.pkl", "wb") as f:
+                            pickle.dump(graph, f, protocol=-1)
+                        with open(cache / f"rdkit_ligands_{idx}.pkl", "wb") as f:
+                            pickle.dump(lig, f, protocol=-1)
+                        idx += 1
                     pbar.update()
-            with open(os.path.join(self.full_cache_path, "heterographs.pkl"), 'wb') as f:
-                pickle.dump((complex_graphs), f,protocol=-1)
-            with open(os.path.join(self.full_cache_path, "rdkit_ligands.pkl"), 'wb') as f:
-                pickle.dump((rdkit_ligands), f,protocol=-1)
     def inference_preprocessing(self):
         ligands_list = []
         logger.info('Reading molecules and generating local structures with RDKit (unless --keep_local_structures is turned on).')
@@ -371,59 +326,41 @@ class PDBBind(Dataset):
             lm_embeddings_chains_all = [None] * len(self.protein_path_list)
 
         logger.info('Generating graphs for ligands and proteins')
+        cache = Path(self.full_cache_path)
         if self.num_workers > 1:
-            # running preprocessing in parallel on multiple workers and saving the progress every 1000 complexes
+            idx = 0
             for i in range(len(self.protein_path_list)//1000+1):
-                if os.path.exists(os.path.join(self.full_cache_path, f"heterographs{i}.pkl")):
+                if (cache / f"heterographs_{1000*i}.pkl").exists():
+                    idx += len(self.protein_path_list[1000*i:1000*(i+1)])
                     continue
                 protein_paths_chunk = self.protein_path_list[1000*i:1000*(i+1)]
                 ligand_description_chunk = self.ligand_descriptions[1000*i:1000*(i+1)]
                 ligands_chunk = ligands_list[1000 * i:1000 * (i + 1)]
                 lm_embeddings_chains = lm_embeddings_chains_all[1000*i:1000*(i+1)]
-                complex_graphs, rdkit_ligands = [], []
-                if self.num_workers > 1:
-                    p = Pool(self.num_workers, maxtasksperchild=1)
-                    p.__enter__()
-                with tqdm(total=len(protein_paths_chunk), desc=f'loading complexes {i}/{len(protein_paths_chunk)//1000+1}') as pbar:
-                    map_fn = p.imap_unordered if self.num_workers > 1 else map
-                    for t in map_fn(self.get_complex, zip(protein_paths_chunk, lm_embeddings_chains, ligands_chunk,ligand_description_chunk)):
-                        complex_graphs.extend(t[0])
-                        rdkit_ligands.extend(t[1])
+                p = Pool(self.num_workers, maxtasksperchild=1)
+                p.__enter__()
+                with tqdm(total=len(protein_paths_chunk), desc=f'loading complexes {i}/{len(self.protein_path_list)//1000+1}') as pbar:
+                    for t in p.imap_unordered(self.get_complex, zip(protein_paths_chunk, lm_embeddings_chains, ligands_chunk, ligand_description_chunk)):
+                        for graph, lig in zip(t[0], t[1]):
+                            with open(cache / f"heterographs_{idx}.pkl", "wb") as f:
+                                pickle.dump(graph, f, protocol=-1)
+                            with open(cache / f"rdkit_ligands_{idx}.pkl", "wb") as f:
+                                pickle.dump(lig, f, protocol=-1)
+                            idx += 1
                         pbar.update()
-                if self.num_workers > 1: p.__exit__(None, None, None)
-
-                with open(os.path.join(self.full_cache_path, f"heterographs{i}.pkl"), 'wb') as f:
-                    pickle.dump((complex_graphs), f,protocol=-1)
-                with open(os.path.join(self.full_cache_path, f"rdkit_ligands{i}.pkl"), 'wb') as f:
-                    pickle.dump((rdkit_ligands), f,protocol=-1)
-
-            complex_graphs_all = []
-            for i in range(len(self.protein_path_list)//1000+1):
-                with open(os.path.join(self.full_cache_path, f"heterographs{i}.pkl"), 'rb') as f:
-                    l = pickle.load(f)
-                    complex_graphs_all.extend(l)
-            with open(os.path.join(self.full_cache_path, f"heterographs.pkl"), 'wb') as f:
-                pickle.dump((complex_graphs_all), f,protocol=-1)
-
-            rdkit_ligands_all = []
-            for i in range(len(self.protein_path_list) // 1000 + 1):
-                with open(os.path.join(self.full_cache_path, f"rdkit_ligands{i}.pkl"), 'rb') as f:
-                    l = pickle.load(f)
-                    rdkit_ligands_all.extend(l)
-            with open(os.path.join(self.full_cache_path, f"rdkit_ligands.pkl"), 'wb') as f:
-                pickle.dump((rdkit_ligands_all), f,protocol=-1)
+                p.__exit__(None, None, None)
         else:
-            complex_graphs, rdkit_ligands = [], []
+            idx = 0
             with tqdm(total=len(self.protein_path_list), desc='loading complexes') as pbar:
                 for t in map(self.get_complex, zip(self.protein_path_list, lm_embeddings_chains_all, ligands_list, self.ligand_descriptions)):
-                    complex_graphs.extend(t[0])
-                    rdkit_ligands.extend(t[1])
+                    for graph, lig in zip(t[0], t[1]):
+                        with open(cache / f"heterographs_{idx}.pkl", "wb") as f:
+                            pickle.dump(graph, f, protocol=-1)
+                        with open(cache / f"rdkit_ligands_{idx}.pkl", "wb") as f:
+                            pickle.dump(lig, f, protocol=-1)
+                        idx += 1
                     pbar.update()
-            if complex_graphs == []: raise Exception('Preprocessing did not succeed for any complex')
-            with open(os.path.join(self.full_cache_path, "heterographs.pkl"), 'wb') as f:
-                pickle.dump((complex_graphs), f,protocol=-1)
-            with open(os.path.join(self.full_cache_path, "rdkit_ligands.pkl"), 'wb') as f:
-                pickle.dump((rdkit_ligands), f,protocol=-1)
+            if idx == 0: raise Exception('Preprocessing did not succeed for any complex')
     def get_complex(self, par):
         name, lm_embedding_chains, ligand, ligand_description = par
         t_total = time.perf_counter()

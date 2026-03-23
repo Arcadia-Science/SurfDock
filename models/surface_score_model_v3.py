@@ -14,9 +14,17 @@ from datasets.process_mols import lig_feature_dims, rec_residue_feature_dims
 # to use a graph to make massage passing ,between surface and residue,and then just use surface to update!
 # compare with version 2 , this version use more layers to update surface nodes
 
+ESM2_EMBEDDING_DIMS: dict[str, int] = {
+    "esm2_8M": 320,
+    "esm2_35M": 480,
+    "esm2_150M": 640,
+    "esm2_650M": 1280,
+    "esm2_3B": 2560,
+}
+
+
 class AtomEncoder(torch.nn.Module):
-    def __init__(self, emb_dim, feature_dims, sigma_embed_dim, lm_embedding_type= None):
-        # first element of feature_dims tuple is a list with the lenght of each categorical feature and the second is the number of scalar features
+    def __init__(self, emb_dim, feature_dims, sigma_embed_dim, lm_embedding_type=None, esm_model_name="esm2_650M"):
         super(AtomEncoder, self).__init__()
         self.atom_embedding_list = torch.nn.ModuleList()
         self.num_categorical_features = len(feature_dims[0])
@@ -30,9 +38,7 @@ class AtomEncoder(torch.nn.Module):
         if self.num_scalar_features > 0:
             self.linear = torch.nn.Linear(self.num_scalar_features, emb_dim)
         if self.lm_embedding_type is not None:
-            if self.lm_embedding_type == 'esm':
-                self.lm_embedding_dim = 1280
-            else: raise ValueError('LM Embedding type was not correctly determined. LM embedding type: ', self.lm_embedding_type)
+            self.lm_embedding_dim = ESM2_EMBEDDING_DIMS[esm_model_name]
             self.lm_embedding_layer = torch.nn.Linear(self.lm_embedding_dim + emb_dim, emb_dim)
     def forward(self, x):
         x_embedding = 0
@@ -94,7 +100,7 @@ class TensorProductScoreModel(torch.nn.Module):
                  ns=16, nv=4, num_conv_layers=2, lig_max_radius=5, rec_max_radius=30, cross_max_distance=250,
                  center_max_distance=30, distance_embed_dim=32, cross_distance_embed_dim=32, no_torsion=False,
                  scale_by_sigma=True, use_second_order_repr=False, batch_norm=True,
-                 dynamic_max_cross=False, dropout=0.0, lm_embedding_type=None, confidence_mode=False,
+                 dynamic_max_cross=False, dropout=0.0, lm_embedding_type=None, esm_model_name="esm2_650M", confidence_mode=False,
                  confidence_dropout=0, confidence_no_batchnorm=False, num_confidence_outputs=1):
         super(TensorProductScoreModel, self).__init__()
         self.t_to_sigma = t_to_sigma
@@ -118,7 +124,7 @@ class TensorProductScoreModel(torch.nn.Module):
 
         self.lig_node_embedding = AtomEncoder(emb_dim=ns, feature_dims=lig_feature_dims, sigma_embed_dim=sigma_embed_dim)
         self.lig_edge_embedding = nn.Sequential(nn.Linear(in_lig_edge_features + sigma_embed_dim + distance_embed_dim, ns),nn.ReLU(), nn.Dropout(dropout),nn.Linear(ns, ns))
-        self.rec_node_embedding = AtomEncoder(emb_dim=ns, feature_dims=rec_residue_feature_dims, sigma_embed_dim=0, lm_embedding_type=lm_embedding_type)
+        self.rec_node_embedding = AtomEncoder(emb_dim=ns, feature_dims=rec_residue_feature_dims, sigma_embed_dim=0, lm_embedding_type=lm_embedding_type, esm_model_name=esm_model_name)
         self.rec_edge_embedding = nn.Sequential(nn.Linear(in_rec_edge_features + distance_embed_dim, ns), nn.ReLU(), nn.Dropout(dropout),nn.Linear(ns, ns))
         # surface embeddings
         self.surface_node_embedding = AtomEncoder(emb_dim=ns, feature_dims=[[],4], sigma_embed_dim=sigma_embed_dim)

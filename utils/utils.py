@@ -128,6 +128,7 @@ def get_model(args, device, t_to_sigma, no_parallel=False, model_type='score_mod
                     cross_max_distance=args.cross_max_distance,
                     dynamic_max_cross=args.dynamic_max_cross,
                     lm_embedding_type=lm_embedding_type,
+                    esm_model_name=args.esm_model_name,
                     mdn_dropout=args.mdn_dropout,n_gaussians = args.n_gaussians)
     
     elif model_type == 'surface_score_model':
@@ -151,6 +152,7 @@ def get_model(args, device, t_to_sigma, no_parallel=False, model_type='score_mod
                     cross_max_distance=args.cross_max_distance,
                     dynamic_max_cross=args.dynamic_max_cross,
                     lm_embedding_type=lm_embedding_type,
+                    esm_model_name=args.esm_model_name,
                    )
     else:
         raise f'not support {model_type} type model setup'
