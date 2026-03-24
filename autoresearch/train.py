@@ -41,6 +41,9 @@ from utils import so3, torus
 
 
 class ESMModel(enum.Enum):
+    """ESM2 protein language model used to embed receptor residues.
+    Larger models produce richer embeddings but are slower.
+    Hidden dims: 8M=320, 35M=480, 150M=640, 650M=1280, 3B=2560."""
     ESM2_8M = "esm2_8M"
     ESM2_35M = "esm2_35M"
     ESM2_150M = "esm2_150M"
@@ -58,6 +61,9 @@ class ESMModel(enum.Enum):
 
 
 class PocketCutoff(enum.Enum):
+    """Pocket extraction radius in angstroms. All protein residues with any
+    atom within this distance of any ligand atom are included in the pocket
+    surface. Larger values give more receptor context."""
     A8 = "8A"
     A10 = "10A"
 
