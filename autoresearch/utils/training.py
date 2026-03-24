@@ -1,14 +1,13 @@
 import copy
 
 import numpy as np
-from torch_geometric.loader import DataLoader
-from tqdm import tqdm
-from utils import so3, torus
-from utils.sampling import randomize_position, sampling
 import torch
+from torch_geometric.data import Dataset, Data
+from torch_geometric.loader import DataLoader
+
+from utils import so3, torus
 from utils.diffusion_utils import get_t_schedule
-from torch_geometric.data import Dataset,Data
-from loguru import logger
+from utils.sampling import randomize_position, sampling
 class ListDataset(Dataset):
     def __init__(self, list):
         super().__init__()
@@ -17,7 +16,6 @@ class ListDataset(Dataset):
         return len(self.data_list)
     def get(self, idx: int) -> Data:
         return self.data_list[idx]
-import gc
 def loss_function(tr_pred, rot_pred, tor_pred, data, t_to_sigma, device,tr_weight=1, rot_weight=1,
                   tor_weight=1, apply_mean=True, no_torsion=False):
     tr_sigma, rot_sigma, tor_sigma = t_to_sigma(
@@ -107,10 +105,9 @@ def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerato
     # if mdn_mode:
         #
     meter = AverageMeter(['loss', 'tr_loss', 'rot_loss', 'tor_loss', 'tr_base_loss', 'rot_base_loss', 'tor_base_loss'])
-    pbar = tqdm(loader, total=len(loader),disable=not accelerator.is_local_main_process)
-    for data in pbar:
+    for data in loader:
         if device.type == 'cuda' and len(data) == 1 or device.type == 'cpu' and data.num_graphs == 1:
-            logger.info("Skipping batch of size 1 since otherwise batchnorm would not work.")
+            pass
         optimizer.zero_grad()
         try:
             tr_pred, rot_pred, tor_pred = model(data)
@@ -125,46 +122,38 @@ def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerato
                 #     accelerator.clip_grad_norm_(model.parameters(), max_grad_norm = 1.0)
                 optimizer.step()
             else:
-                logger.info(f'loss is nan in these data samples: {data.name}')
-                # continue
                 loss = torch.nan_to_num(loss)
             # gather all loss for plot
             loss, tr_loss, rot_loss, tor_loss, tr_base_loss, rot_base_loss, tor_base_loss = \
                 accelerator.gather(loss),accelerator.gather(tr_loss), accelerator.gather(rot_loss), \
                     accelerator.gather(tor_loss), accelerator.gather(tr_base_loss), accelerator.gather(rot_base_loss), accelerator.gather(tor_base_loss)
 
-            ema_weights.update(model.parameters())
+            if ema_weights is not None:
+                ema_weights.update(model.parameters())
             meter.add([loss.mean().cpu().detach(), tr_loss.mean().cpu().detach(), rot_loss.mean().cpu().detach(), tor_loss.mean().cpu().detach(), tr_base_loss.mean().cpu().detach(), rot_base_loss.mean().cpu().detach(), tor_base_loss.mean().cpu().detach()])
         except RuntimeError as e:
             if 'out of memory' in str(e):
-                logger.info('| WARNING: ran out of memory, skipping batch')
                 for p in model.parameters():
                     if p.grad is not None:
-                        del p.grad  # free some memory
+                        del p.grad
                 optimizer.zero_grad()
                 del data
-
-                gc.collect()
                 torch.cuda.empty_cache()
                 continue
             elif 'Input mismatch' in str(e):
-                logger.info('| WARNING: weird torch_cluster error, skipping batch')
                 for p in model.parameters():
                     if p.grad is not None:
-                        del p.grad  # free some memory
+                        del p.grad
                 optimizer.zero_grad()
                 del data
-                gc.collect()
                 torch.cuda.empty_cache()
                 continue
             else:
                 raise e
-    logger.info('clear last train batch data and model grad')
     for p in model.parameters():
         if p.grad is not None:
-            del p.grad  # free some memory
+            del p.grad
     del data
-    gc.collect()
     torch.cuda.empty_cache()
     return meter.summary()
 
@@ -180,7 +169,7 @@ def test_epoch(model, loader, device, t_to_sigma, loss_fn,accelerator, test_sigm
             ['loss', 'tr_loss', 'rot_loss', 'tor_loss', 'tr_base_loss', 'rot_base_loss', 'tor_base_loss'],
             unpooled_metrics=True, intervals=10)
     
-    for data in tqdm(loader, total=len(loader),disable=not accelerator.is_local_main_process):
+    for data in loader:
         try:
             if not model_type == 'energy_score_model':
                 with torch.no_grad():
@@ -217,31 +206,25 @@ def test_epoch(model, loader, device, t_to_sigma, loss_fn,accelerator, test_sigm
                      sigma_index_tor, sigma_index_tr])
         except RuntimeError as e:
             if 'out of memory' in str(e):
-                logger.info('| WARNING: ran out of memory, skipping batch')
                 for p in model.parameters():
                     if p.grad is not None:
-                        del p.grad  # free some memory
+                        del p.grad
                 del data
-                gc.collect()
                 torch.cuda.empty_cache()
                 continue
             elif 'Input mismatch' in str(e):
-                logger.info('| WARNING: weird torch_cluster error, skipping batch')
                 for p in model.parameters():
                     if p.grad is not None:
-                        del p.grad  # free some memory
+                        del p.grad
                 del data
-                gc.collect()
                 torch.cuda.empty_cache()
                 continue
             else:
                 raise e
-    logger.info('clear val batch data and model grad')
     for p in model.parameters():
         if p.grad is not None:
-            del p.grad  # free some memory
+            del p.grad
     del data
-    gc.collect()
     torch.cuda.empty_cache()
     out = meter.summary()
     if test_sigma_intervals > 0: out.update(meter_all.summary())
@@ -257,9 +240,7 @@ def inference_epoch(model, complex_graphs, device, t_to_sigma, args,accelerator)
     loader = DataLoader(dataset=dataset, batch_size=1, shuffle=False)
     loader = accelerator.prepare(loader)
     rmsds = []
-    logger.info(f'dataset size {len(dataset)}')
-    for orig_complex_graph in tqdm(loader,disable=not accelerator.is_local_main_process):
-
+    for orig_complex_graph in loader:
         data_list = [copy.deepcopy(orig_complex_graph)]
         randomize_position(data_list, args.no_torsion, False, args.tr_sigma_max)
 
@@ -277,9 +258,7 @@ def inference_epoch(model, complex_graphs, device, t_to_sigma, args,accelerator)
                 if 'failed to converge' in str(e):
                     failed_convergence_counter += 1
                     if failed_convergence_counter > 5:
-                        logger.info('| WARNING: SVD failed to converge 5 times - skipping the complex')
                         break
-                    logger.info('| WARNING: SVD failed to converge - trying again with a new sample')
                 else:
                     raise e
         if failed_convergence_counter > 5: continue
@@ -299,11 +278,9 @@ def inference_epoch(model, complex_graphs, device, t_to_sigma, args,accelerator)
         rmsd = np.sqrt(((ligand_pos - orig_ligand_pos) ** 2).sum(axis=2).mean(axis=1))
         rmsds.append(rmsd)
     rmsds = np.array(rmsds)
-    logger.info(f'rmsd: {rmsds}')
     losses = {'rmsds_lt2': (100 * (rmsds < 2).sum() / len(rmsds)),
               'rmsds_lt5': (100 * (rmsds < 5).sum() / len(rmsds))}
-    del dataset, loader,predictions_list, confidences,ligand_pos, orig_ligand_pos, rmsd,filterHs
-    gc.collect()
+    del dataset, loader, predictions_list, confidences, ligand_pos, orig_ligand_pos, rmsd, filterHs
     torch.cuda.empty_cache()
     return losses
 def inference_epoch_parallel(model, complex_graphs, device, t_to_sigma, args,accelerator):
@@ -314,7 +291,7 @@ def inference_epoch_parallel(model, complex_graphs, device, t_to_sigma, args,acc
     loader = DataLoader(dataset=dataset, batch_size=args.batch_size, shuffle=False)
     loader = accelerator.prepare(loader)
     rmsds = []
-    for orig_complex_graph in tqdm(loader,disable=not accelerator.is_local_main_process):
+    for orig_complex_graph in loader:
         orig_complex_graph_list = orig_complex_graph.to_data_list()
         data_list = [copy.deepcopy(graph) for graph in orig_complex_graph_list ]
         randomize_position(data_list, args.no_torsion, False, args.tr_sigma_max)
@@ -333,9 +310,7 @@ def inference_epoch_parallel(model, complex_graphs, device, t_to_sigma, args,acc
                 if 'failed to converge' in str(e):
                     failed_convergence_counter += 1
                     if failed_convergence_counter > 5:
-                        logger.info('| WARNING: SVD failed to converge 5 times - skipping the complex')
                         break
-                    logger.info('| WARNING: SVD failed to converge - trying again with a new sample')
                 else:
                     raise e
         if failed_convergence_counter > 5: continue
@@ -352,7 +327,6 @@ def inference_epoch_parallel(model, complex_graphs, device, t_to_sigma, args,acc
 
     losses = {'rmsds_lt2': (100 * (rmsds < 2).sum() / len(rmsds)),
               'rmsds_lt5': (100 * (rmsds < 5).sum() / len(rmsds))}
-    del dataset, loader,predictions_list, confidences,ligand_pos, orig_ligand_pos, rmsd,filterHs,complex_graphs
-    gc.collect()
+    del dataset, loader, predictions_list, confidences, ligand_pos, orig_ligand_pos, rmsd, filterHs, complex_graphs
     torch.cuda.empty_cache()
     return losses

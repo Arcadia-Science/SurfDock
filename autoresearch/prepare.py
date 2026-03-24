@@ -1,4 +1,5 @@
 import warnings
+
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.jit._check")
 
 import os
@@ -18,13 +19,12 @@ from datasets.pdbbind import construct_loader
 from datasets.process_mols import lig_feature_dims, rec_residue_feature_dims
 from utils.diffusion_utils import t_to_sigma as t_to_sigma_compl, get_timestep_embedding
 from utils.training import train_epoch, test_epoch, loss_function
-from utils.utils import save_yaml_file, ExponentialMovingAverage
 
 TR_WEIGHT = 0.33
 ROT_WEIGHT = 0.33
 TOR_WEIGHT = 0.33
 
-N_EPOCHS = 100
+TIME_BUDGET = 300  # seconds — fixed across all experiments
 LIMIT_COMPLEXES = 50
 
 DATA_DIR = "../data/processed"
@@ -49,7 +49,6 @@ def make_args(
     batch_size: int,
     lr: float,
     w_decay: float,
-    ema_rate: float,
     esm_model_name: str,
     pocket_cutoff: str,
     scheduler: str = None,
@@ -61,7 +60,6 @@ def make_args(
     no_batch_norm: bool = False,
     dynamic_max_cross: bool = False,
     no_torsion: bool = False,
-    use_ema: bool = False,
     scale_by_sigma: bool = True,
 ) -> Namespace:
     return Namespace(
@@ -77,13 +75,13 @@ def make_args(
         esm_embeddings_path=ESM_EMBEDDINGS_PATH,
         esm_model_name=esm_model_name,
         pocket_cutoff=pocket_cutoff,
-        n_epochs=N_EPOCHS,
+        n_epochs=999999,
         limit_complexes=LIMIT_COMPLEXES,
         batch_size=batch_size,
         lr=lr,
         w_decay=w_decay,
-        ema_rate=ema_rate,
-        use_ema=use_ema,
+        ema_rate=0.999,
+        use_ema=False,
         scheduler=scheduler,
         scheduler_patience=scheduler_patience,
         ns=ns,

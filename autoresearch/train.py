@@ -1,34 +1,33 @@
-import copy
+"""
+SurfDock autoresearch training script.
+Usage: uv run accelerate launch --cpu train.py
+"""
 import enum
 import math
-import os
-import datetime
+import time
 from functools import partial
 
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.tensorboard import SummaryWriter
 from e3nn import o3
 from e3nn.nn import BatchNorm
 from torch_cluster import radius, radius_graph
 from torch_scatter import scatter
-from loguru import logger
 
 from prepare import (
     TR_WEIGHT,
     ROT_WEIGHT,
     TOR_WEIGHT,
+    TIME_BUDGET,
     accelerator,
     construct_loader,
     device,
-    ExponentialMovingAverage,
     get_timestep_embedding,
     lig_feature_dims,
     loss_function,
     make_args,
     rec_residue_feature_dims,
-    save_yaml_file,
     t_to_sigma_compl,
     test_epoch,
     train_epoch,
@@ -36,7 +35,9 @@ from prepare import (
 from utils import so3, torus
 
 
-# ─── Hyperparameters ─────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Hyperparameters
+# ---------------------------------------------------------------------------
 
 
 class ESMModel(enum.Enum):
@@ -56,31 +57,30 @@ class ESMModel(enum.Enum):
         }[self.value]
 
 
-ESM_MODEL = ESMModel.ESM2_35M
-
-
 class PocketCutoff(enum.Enum):
     A8 = "8A"
     A10 = "10A"
 
 
-POCKET_CUTOFF = PocketCutoff.A8
+ESM_MODEL = ESMModel.ESM2_35M           # language model for receptor embeddings
+POCKET_CUTOFF = PocketCutoff.A8          # pocket distance cutoff for surface files
 
-NS = 8
-NV = 2
-NUM_CONV_LAYERS = 2
-DISTANCE_EMBED_DIM = 16
-CROSS_DISTANCE_EMBED_DIM = 16
-SIGMA_EMBED_DIM = 32
-EMBEDDING_TYPE = "sinusoidal"  # "sinusoidal" or "fourier"
-EMBEDDING_SCALE = 1000
-BATCH_SIZE = 2
-LR = 1e-3
-WEIGHT_DECAY = 0.0
-EMA_RATE = 0.999
+NS = 8                                   # scalar feature channels per node
+NV = 2                                   # vector feature channels per node
+NUM_CONV_LAYERS = 2                      # equivariant message passing layers
+DISTANCE_EMBED_DIM = 16                  # Gaussian smearing features for distances
+CROSS_DISTANCE_EMBED_DIM = 16            # Gaussian smearing for cross-graph distances
+SIGMA_EMBED_DIM = 32                     # diffusion timestep embedding dim
+EMBEDDING_TYPE = "sinusoidal"            # "sinusoidal" or "fourier"
+EMBEDDING_SCALE = 1000                   # timestep embedding frequency scale
+BATCH_SIZE = 2                           # graphs per batch
+LR = 1e-3                               # AdamW learning rate
+WEIGHT_DECAY = 0.0                       # AdamW weight decay
 
 
-# ─── Model Architecture ─────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Model Architecture
+# ---------------------------------------------------------------------------
 
 
 class GaussianSmearing(torch.nn.Module):
@@ -516,7 +516,9 @@ class TensorProductScoreModel(torch.nn.Module):
         return bonds, edge_index, edge_attr, edge_sh
 
 
-# ─── Model Construction ─────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Model Construction
+# ---------------------------------------------------------------------------
 
 
 def build_timestep_embedding():
@@ -550,143 +552,95 @@ def build_model(args, t_to_sigma, device):
     )
 
 
-# ─── Optimizer & Scheduler ───────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Optimizer & Scheduler
+# ---------------------------------------------------------------------------
 
 
-def build_optimizer_and_scheduler(model, args):
+def build_optimizer_and_scheduler(model):
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=LR,
         weight_decay=WEIGHT_DECAY,
     )
-    scheduler = None
-    if args.scheduler == 'plateau':
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='max', factor=0.7,
-            patience=args.scheduler_patience, min_lr=LR / 100)
-    return optimizer, scheduler
+    return optimizer
 
 
-# ─── Training Loop ───────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
+
+t_start = time.time()
+
+args = make_args(
+    ns=NS,
+    nv=NV,
+    num_conv_layers=NUM_CONV_LAYERS,
+    distance_embed_dim=DISTANCE_EMBED_DIM,
+    cross_distance_embed_dim=CROSS_DISTANCE_EMBED_DIM,
+    sigma_embed_dim=SIGMA_EMBED_DIM,
+    batch_size=BATCH_SIZE,
+    lr=LR,
+    w_decay=WEIGHT_DECAY,
+    esm_model_name=ESM_MODEL.value,
+    pocket_cutoff=POCKET_CUTOFF.value,
+)
+
+t_to_sigma = partial(t_to_sigma_compl, args=args)
+train_loader, val_loader = construct_loader(args, t_to_sigma)
+
+model = build_model(args, t_to_sigma, device)
+model.to(device)
+optimizer = build_optimizer_and_scheduler(model)
+
+model = accelerator.prepare(model)
+optimizer, train_loader, val_loader = accelerator.prepare(optimizer, train_loader, val_loader)
+
+num_params = sum(p.numel() for p in model.parameters())
+print(f"Model with {num_params:,} parameters")
+print(f"Time budget: {TIME_BUDGET}s")
+
+loss_fn = partial(loss_function, tr_weight=TR_WEIGHT, rot_weight=ROT_WEIGHT,
+                  tor_weight=TOR_WEIGHT, no_torsion=args.no_torsion)
 
 
-def train(args, model, optimizer, scheduler, ema_weights, train_loader, val_loader, t_to_sigma, run_dir, tb_writer=None):
-    best_val_loss = math.inf
-    best_epoch = 0
-    loss_fn = partial(loss_function, tr_weight=TR_WEIGHT, rot_weight=ROT_WEIGHT,
-                      tor_weight=TOR_WEIGHT, no_torsion=args.no_torsion)
+# ---------------------------------------------------------------------------
+# Training loop
+# ---------------------------------------------------------------------------
 
-    if accelerator.is_local_main_process:
-        logger.info("Starting training...")
+t_start_training = time.time()
+best_val_loss = math.inf
+best_epoch = 0
+epoch = 0
 
-    for epoch in range(args.n_epochs):
-        logs = {}
+while True:
+    train_losses = train_epoch(model, train_loader, optimizer, device, t_to_sigma, loss_fn, accelerator, None)
+    val_losses = test_epoch(model, val_loader, device, t_to_sigma, loss_fn, accelerator, False, model_type=args.model_type)
 
-        train_losses = train_epoch(model, train_loader, optimizer, device, t_to_sigma, loss_fn, accelerator, ema_weights)
-        if accelerator.is_local_main_process:
-            logger.info("Epoch {}: Training loss {:.4f}  tr {:.4f}   rot {:.4f}   tor {:.4f}"
-                .format(epoch, train_losses['loss'], train_losses['tr_loss'], train_losses['rot_loss'],
-                        train_losses['tor_loss']))
+    if val_losses['loss'] < best_val_loss:
+        best_val_loss = val_losses['loss']
+        best_epoch = epoch
 
-        ema_weights.store(model.parameters())
-        if args.use_ema:
-            ema_weights.copy_to(model.parameters())
+    elapsed = time.time() - t_start_training
+    remaining = max(0, TIME_BUDGET - elapsed)
+    print(f"Epoch {epoch:3d} | train {train_losses['loss']:.4f} | val {val_losses['loss']:.4f} | best {best_val_loss:.4f} @ {best_epoch} | {remaining:.0f}s left")
 
-        val_losses = test_epoch(model, val_loader, device, t_to_sigma, loss_fn, accelerator, args.test_sigma_intervals, model_type=args.model_type)
-        accelerator.wait_for_everyone()
-        if accelerator.is_local_main_process:
-            logger.info("Epoch {}: Validation loss {:.4f}  tr {:.4f}   rot {:.4f}   tor {:.4f}"
-                .format(epoch, val_losses['loss'], val_losses['tr_loss'], val_losses['rot_loss'], val_losses['tor_loss']))
-
-        if not args.use_ema:
-            ema_weights.copy_to(model.parameters())
-        accelerator.wait_for_everyone()
-
-        unwrapped_model = accelerator.unwrap_model(model)
-        ema_state_dict = copy.deepcopy(unwrapped_model.state_dict())
-        ema_weights.restore(model.parameters())
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        state_dict = unwrapped_model.state_dict()
-
-        logs.update({'train_' + k: v for k, v in train_losses.items()})
-        logs.update({'val_' + k: v for k, v in val_losses.items()})
-        logs['current_lr'] = optimizer.param_groups[0]['lr']
-
-        if tb_writer is not None:
-            for k, v in logs.items():
-                tb_writer.add_scalar(k, v, epoch + 1)
-
-        if val_losses['loss'] <= best_val_loss:
-            best_val_loss = val_losses['loss']
-            best_epoch = epoch
-            if accelerator.is_local_main_process:
-                torch.save(state_dict, os.path.join(run_dir, 'best_model.pt'))
-                torch.save(ema_state_dict, os.path.join(run_dir, 'best_ema_model.pt'))
-
-        if scheduler is not None:
-            scheduler.step(val_losses['loss'])
-
-        if accelerator.is_local_main_process:
-            torch.save({
-                'epoch': epoch,
-                'model': state_dict,
-                'optimizer': optimizer.state_dict(),
-                'ema_weights': ema_weights.state_dict(),
-            }, os.path.join(run_dir, 'last_model.pt'))
-
-    if accelerator.is_local_main_process:
-        logger.info("Best Validation Loss {} on Epoch {}".format(best_val_loss, best_epoch))
-    if tb_writer is not None:
-        tb_writer.close()
-
-    print("---")
-    print(f"val_loss:           {best_val_loss:.6f}")
-    print(f"best_epoch:         {best_epoch}")
-    print(f"num_params:         {sum(p.numel() for p in model.parameters())}")
+    epoch += 1
+    if elapsed >= TIME_BUDGET:
+        break
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
 
+total_seconds = time.time() - t_start
+training_seconds = time.time() - t_start_training
 
-if __name__ == '__main__':
-    args = make_args(
-        ns=NS,
-        nv=NV,
-        num_conv_layers=NUM_CONV_LAYERS,
-        distance_embed_dim=DISTANCE_EMBED_DIM,
-        cross_distance_embed_dim=CROSS_DISTANCE_EMBED_DIM,
-        sigma_embed_dim=SIGMA_EMBED_DIM,
-        batch_size=BATCH_SIZE,
-        lr=LR,
-        w_decay=WEIGHT_DECAY,
-        ema_rate=EMA_RATE,
-        esm_model_name=ESM_MODEL.value,
-        pocket_cutoff=POCKET_CUTOFF.value,
-    )
-
-    run_dir = os.path.join(args.log_dir, args.run_name)
-    os.makedirs(run_dir, exist_ok=True)
-    logger.add(os.path.join(run_dir, 'LogFile.log'), rotation='100 MB')
-    logger.info(f'device {device} | Args: {args}')
-
-    t_to_sigma = partial(t_to_sigma_compl, args=args)
-    train_loader, val_loader = construct_loader(args, t_to_sigma)
-
-    model = build_model(args, t_to_sigma, device)
-    model.to(device)
-    optimizer, scheduler = build_optimizer_and_scheduler(model, args)
-    ema_weights = ExponentialMovingAverage(model.parameters(), decay=EMA_RATE)
-
-    model = accelerator.prepare(model)
-    optimizer, train_loader, val_loader, scheduler = accelerator.prepare(
-        optimizer, train_loader, val_loader, scheduler)
-
-    numel = sum(p.numel() for p in model.parameters())
-    logger.info(f'Model with {numel} parameters')
-
-    save_yaml_file(os.path.join(run_dir, 'model_parameters.yml'), args.__dict__)
-    args.device = device
-
-    tb_writer = SummaryWriter(log_dir=os.path.join(run_dir, "tb")) if accelerator.is_local_main_process else None
-    train(args, model, optimizer, scheduler, ema_weights, train_loader, val_loader, t_to_sigma, run_dir, tb_writer=tb_writer)
+print("---")
+print(f"val_loss:           {best_val_loss:.6f}")
+print(f"best_epoch:         {best_epoch}")
+print(f"total_epochs:       {epoch}")
+print(f"training_seconds:   {training_seconds:.1f}")
+print(f"total_seconds:      {total_seconds:.1f}")
+print(f"num_params:         {num_params}")
