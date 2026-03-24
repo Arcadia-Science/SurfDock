@@ -66,21 +66,14 @@ def get_torsion_angles(mol):
     G = nx.Graph()
     for i, atom in enumerate(mol.GetAtoms()):
         G.add_node(i)
-    nodes = set(G.nodes())
     for bond in mol.GetBonds():
-        start, end = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-        G.add_edge(start, end)
-    for e in G.edges():
-        G2 = copy.deepcopy(G)
-        G2.remove_edge(*e)
-        if nx.is_connected(G2): continue
-        l = list(sorted(nx.connected_components(G2), key=len)[0])
-        if len(l) < 2: continue
-        n0 = list(G2.neighbors(e[0]))
-        n1 = list(G2.neighbors(e[1]))
-        torsions_list.append(
-            (n0[0], e[0], e[1], n1[0])
-        )
+        G.add_edge(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
+    for u, v in nx.bridges(G):
+        if G.degree(u) < 2 or G.degree(v) < 2:
+            continue
+        n0 = next(n for n in G.neighbors(u) if n != v)
+        n1 = next(n for n in G.neighbors(v) if n != u)
+        torsions_list.append((n0, u, v, n1))
     return torsions_list
 
 
