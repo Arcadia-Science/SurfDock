@@ -409,7 +409,7 @@ def generate_conformer(mol,useRandomCoords=True):
     if id == -1 and useRandomCoords:
         logger.info('rdkit coords could not be generated without using random coords. using random coords now.')
         ps.useRandomCoords = True
-        ps.maxAttempts=1000
+        ps.maxIterations=1000
         AllChem.EmbedMolecule(mol, ps)
         AllChem.MMFFOptimizeMolecule(mol, confId=0)
     for prop_name, prop_value in prop_dict.items():
