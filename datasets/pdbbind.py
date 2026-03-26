@@ -1,11 +1,10 @@
 import binascii
 import glob
-import hashlib
+import io
 import os
 import time
 from pathlib import Path
-# import pickle
-import _pickle as pickle # use cPickle to speed up
+import _pickle as pickle
 import MDAnalysis as mda
 from plyfile import PlyData
 from torch_geometric.data import Data
@@ -28,7 +27,6 @@ from datasets.process_mols import read_molecule, get_rec_graph, generate_conform
 from utils.diffusion_utils import modify_conformer, set_time
 from utils.utils import read_strings_from_txt
 from utils import so3, torus
-import MDAnalysis as mda
 from prefetch_generator import BackgroundGenerator
 class DataLoaderX(DataLoader):
     def __iter__(self):
@@ -177,67 +175,79 @@ class PDBBind(Dataset):
         self.num_conformers = num_conformers
         self.all_atoms = all_atoms
         self.atom_radius, self.atom_max_neighbors = atom_radius, atom_max_neighbors
-        if not os.path.exists(os.path.join(self.full_cache_path, "heterographs_0.pkl"))\
-                or (require_ligand and not os.path.exists(os.path.join(self.full_cache_path, "rdkit_ligands_0.pkl"))):
-            os.makedirs(self.full_cache_path, exist_ok=True)
-            if protein_path_list is None or ligand_descriptions is None:
-                self.preprocessing()
-            else:
+        cache = Path(self.full_cache_path)
+        data_bin = cache / "data.bin"
+        index_pkl = cache / "index.pkl"
+        if require_ligand:
+            if not (cache / "heterographs_0.pkl").exists():
+                os.makedirs(self.full_cache_path, exist_ok=True)
                 self.inference_preprocessing()
-        logger.info('Training dataset size: {}'.format(len(glob.glob(os.path.join(self.full_cache_path,'heterographs_*.pkl')))))
+            self._index = None
+            self._data_handles: dict[int, io.BufferedReader] = {}
+            self._num_complexes = len(glob.glob(os.path.join(self.full_cache_path, 'heterographs_*.pkl')))
+            logger.info(f'Dataset size: {self._num_complexes}')
+        else:
+            if not data_bin.exists():
+                os.makedirs(self.full_cache_path, exist_ok=True)
+                self.preprocessing()
+            with open(index_pkl, "rb") as f:
+                self._index: list[tuple[int, int]] = pickle.load(f)
+            self._data_handles: dict[int, io.BufferedReader] = {}
+            logger.info(f'Dataset size: {len(self._index)}')
+
+    def _get_data_file(self) -> io.BufferedReader:
+        pid = os.getpid()
+        fh = self._data_handles.get(pid)
+        if fh is None:
+            fh = open(Path(self.full_cache_path) / "data.bin", "rb")
+            self._data_handles[pid] = fh
+        return fh
+
+    def _read_sample(self, idx: int) -> HeteroData:
+        offset, length = self._index[idx]
+        fh = self._get_data_file()
+        fh.seek(offset)
+        return pickle.loads(fh.read(length))
 
     def len(self):
-        return len(glob.glob(os.path.join(self.full_cache_path,'heterographs_*.pkl')))
-        # return 80
-    def get_complexs_list(self,num):
+        if self._index is None:
+            return self._num_complexes
+        return len(self._index)
+
+    def get_complexs_list(self, num):
         graphs_list = []
-        for idx in range(min(num,len(glob.glob(os.path.join(self.full_cache_path,'heterographs_*.pkl'))))):
-            try:
-                with open(os.path.join(self.full_cache_path,f'heterographs_{idx}.pkl'),'rb') as f:
-                    complex_graph = pickle.load(f)
-                complex_graph['ligand'].orig_pos -= complex_graph.original_center.numpy()
-                complex_graph['receptor'].center_pos -= complex_graph.original_center.numpy()
-                complex_graph['receptor'].atoms_pos -= complex_graph.original_center.numpy()
-                graphs_list.append(complex_graph)
-            except:
-                continue
+        for idx in range(min(num, len(self._index))):
+            complex_graph = self._read_sample(idx)
+            complex_graph['ligand'].orig_pos -= complex_graph.original_center.numpy()
+            complex_graph['receptor'].center_pos -= complex_graph.original_center.numpy()
+            complex_graph['receptor'].atoms_pos -= complex_graph.original_center.numpy()
+            graphs_list.append(complex_graph)
         return graphs_list
 
     def get(self, idx):
         if self.require_ligand:
-            with open(os.path.join(self.full_cache_path,f'heterographs_{idx}.pkl'),'rb') as f:
+            with open(os.path.join(self.full_cache_path, f'heterographs_{idx}.pkl'), 'rb') as f:
                 complex_graph = pickle.load(f)
-            with open(os.path.join(self.full_cache_path,f'rdkit_ligands_{idx}.pkl'),'rb') as f:
+            with open(os.path.join(self.full_cache_path, f'rdkit_ligands_{idx}.pkl'), 'rb') as f:
                 complex_graph.mol = pickle.load(f)
-            # complex_graph = copy.deepcopy(self.complex_graphs[idx])
-            # complex_graph.mol = copy.deepcopy(self.rdkit_ligands[idx])
             complex_graph['ligand'].orig_pos -= complex_graph.original_center.numpy()
             complex_graph['receptor'].center_pos -= complex_graph.original_center.numpy()
             complex_graph['receptor'].atoms_pos -= complex_graph.original_center.numpy()
-            # for mdn traing
-            if self.transform is None and not self.require_ligand:
-                logger.info('for mdn traing, use original ligand pos')
-                complex_graph['ligand'].pos = torch.from_numpy(complex_graph['ligand'].orig_pos).float()
-
             return complex_graph
         else:
-            with open(os.path.join(self.full_cache_path,f'heterographs_{idx}.pkl'),'rb') as f:
-                complex_graph = pickle.load(f)
-            # complex_graph = copy.deepcopy(self.complex_graphs[idx])
+            complex_graph = self._read_sample(idx)
             complex_graph['ligand'].orig_pos -= complex_graph.original_center.numpy()
             complex_graph['receptor'].center_pos -= complex_graph.original_center.numpy()
             complex_graph['receptor'].atoms_pos -= complex_graph.original_center.numpy()
-            if self.transform is None and not self.require_ligand:
-                # when use mdn traing ,use original ligand pos,test use rdkit pos
-                logger.info('for mdn traing, use original ligand pos')
+            if self.transform is None:
                 complex_graph['ligand'].pos = torch.from_numpy(complex_graph['ligand'].orig_pos).float()
             return complex_graph
         
     def preprocessing(self):
-        assert self.surface_path is not None,'surface_path is None please set this param if you want to use surface feature'
+        assert self.surface_path is not None, 'surface_path is None please set this param if you want to use surface feature'
         logger.info(f'Processing complexes from [{self.split_path}] and saving it to [{self.full_cache_path}]')
         complex_names_all = read_strings_from_txt(self.split_path)
-        logger.info('complex_names_all: ',len(complex_names_all))
+        logger.info('complex_names_all: ', len(complex_names_all))
         if self.limit_complexes is not None and self.limit_complexes != 0:
             complex_names_all = complex_names_all[:self.limit_complexes]
         logger.info(f'Loading {len(complex_names_all)} complexes.')
@@ -254,36 +264,36 @@ class PDBBind(Dataset):
             lm_embeddings_chains_all = [None] * len(complex_names_all)
 
         cache = Path(self.full_cache_path)
-        if self.num_workers > 1:
-            idx = 0
-            for i in range(len(complex_names_all)//1000+1):
-                chunk_start = idx
-                if (cache / f"heterographs_{1000*i}.pkl").exists():
-                    idx += len(list(complex_names_all[1000*i:1000*(i+1)]))
-                    continue
-                complex_names = complex_names_all[1000*i:1000*(i+1)]
-                lm_embeddings_chains = lm_embeddings_chains_all[1000*i:1000*(i+1)]
-                with tqdm(total=len(complex_names), desc=f'loading complexes {i}/{len(complex_names_all)//1000+1}') as pbar:
-                    t_list = Parallel(n_jobs=self.num_workers, backend="multiprocessing")(delayed(self.get_complex)(x) for x in tqdm(zip(complex_names, lm_embeddings_chains, [None] * len(complex_names), [None] * len(complex_names)),total=len(complex_names)))
+        index: list[tuple[int, int]] = []
+        with open(cache / "data.bin", "wb") as data_f:
+            if self.num_workers > 1:
+                for i in range(len(complex_names_all) // 1000 + 1):
+                    complex_names = complex_names_all[1000 * i:1000 * (i + 1)]
+                    lm_embeddings_chains = lm_embeddings_chains_all[1000 * i:1000 * (i + 1)]
+                    t_list = Parallel(n_jobs=self.num_workers, backend="multiprocessing")(
+                        delayed(self.get_complex)(x) for x in tqdm(
+                            zip(complex_names, lm_embeddings_chains, [None] * len(complex_names), [None] * len(complex_names)),
+                            total=len(complex_names),
+                            desc=f'loading complexes {i}/{len(complex_names_all) // 1000 + 1}',
+                        )
+                    )
                     for t in t_list:
-                        for graph, lig in zip(t[0], t[1]):
-                            with open(cache / f"heterographs_{idx}.pkl", "wb") as f:
-                                pickle.dump(graph, f, protocol=-1)
-                            with open(cache / f"rdkit_ligands_{idx}.pkl", "wb") as f:
-                                pickle.dump(lig, f, protocol=-1)
-                            idx += 1
+                        for graph, _lig in zip(t[0], t[1]):
+                            blob = pickle.dumps(graph, protocol=-1)
+                            offset = data_f.tell()
+                            data_f.write(blob)
+                            index.append((offset, len(blob)))
+            else:
+                with tqdm(total=len(complex_names_all), desc='loading complexes') as pbar:
+                    for t in map(self.get_complex, zip(complex_names_all, lm_embeddings_chains_all, [None] * len(complex_names_all), [None] * len(complex_names_all))):
+                        for graph, _lig in zip(t[0], t[1]):
+                            blob = pickle.dumps(graph, protocol=-1)
+                            offset = data_f.tell()
+                            data_f.write(blob)
+                            index.append((offset, len(blob)))
                         pbar.update()
-        else:
-            idx = 0
-            with tqdm(total=len(complex_names_all), desc='loading complexes') as pbar:
-                for t in map(self.get_complex, zip(complex_names_all, lm_embeddings_chains_all, [None] * len(complex_names_all), [None] * len(complex_names_all))):
-                    for graph, lig in zip(t[0], t[1]):
-                        with open(cache / f"heterographs_{idx}.pkl", "wb") as f:
-                            pickle.dump(graph, f, protocol=-1)
-                        with open(cache / f"rdkit_ligands_{idx}.pkl", "wb") as f:
-                            pickle.dump(lig, f, protocol=-1)
-                        idx += 1
-                    pbar.update()
+        with open(cache / "index.pkl", "wb") as f:
+            pickle.dump(index, f, protocol=-1)
     def inference_preprocessing(self):
         ligands_list = []
         logger.info('Reading molecules and generating local structures with RDKit (unless --keep_local_structures is turned on).')

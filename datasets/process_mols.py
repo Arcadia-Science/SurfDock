@@ -399,17 +399,15 @@ def get_lig_graph(mol, complex_graph,use_chirality = True):
 def generate_conformer(mol,useRandomCoords=True):
     prop_dict = mol.GetPropsAsDict()
     ps = AllChem.ETKDGv2()
+    ps.timeout = 60
     failures, id = 0, -1
     while failures < 5 and id == -1:
-        # if failures > 0:
-        
         id = AllChem.EmbedMolecule(mol, ps)
         failures += 1
-    # logger.info(f'rdkit coords could not be generated. tried repeats={failures}.')
     if id == -1 and useRandomCoords:
         logger.info('rdkit coords could not be generated without using random coords. using random coords now.')
         ps.useRandomCoords = True
-        ps.maxIterations=1000
+        ps.maxIterations = 1000
         AllChem.EmbedMolecule(mol, ps)
         AllChem.MMFFOptimizeMolecule(mol, confId=0)
     for prop_name, prop_value in prop_dict.items():

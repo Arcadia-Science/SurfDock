@@ -5,7 +5,7 @@ from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem, rdMolTransforms
 from rdkit import Geometry
 import networkx as nx
-from scipy.optimize import differential_evolution
+from scipy.optimize import differential_evolution, minimize
 
 RDLogger.DisableLog('rdApp.*')
 
@@ -42,6 +42,134 @@ def optimize_rotatable_bonds(mol, true_mol, rotable_bonds, probe_id=-1, ref_id=-
     opt_mol = apply_changes(opt.mol, result['x'], opt.rotable_bonds, conf_id=probe_id)
 
     return opt_mol
+
+
+def _remove_all_hs(mol):
+    params = Chem.RemoveHsParameters()
+    params.removeAndTrackIsotopes = True
+    params.removeDefiningBondStereo = True
+    params.removeDegreeZero = True
+    params.removeDummyNeighbors = True
+    params.removeHigherDegrees = True
+    params.removeHydrides = True
+    params.removeInSGroups = True
+    params.removeIsotopes = True
+    params.removeMapped = True
+    params.removeNonimplicit = True
+    params.removeOnlyHNeighbors = True
+    params.removeWithQuery = True
+    params.removeWithWedgedBond = True
+    return Chem.RemoveHs(mol, params)
+
+
+def _quick_screen(mol, crystal_mol, rotable_bonds, crystal_torsions):
+    work = copy.deepcopy(mol)
+    conf = work.GetConformer()
+    for i, r in enumerate(rotable_bonds):
+        SetDihedral(conf, r, crystal_torsions[i])
+    return RMSD(work, crystal_mol)
+
+
+def _optimize_from_mol(mol, crystal_mol, rotable_bonds, crystal_torsions):
+    work = copy.deepcopy(mol)
+    conf = work.GetConformer()
+
+    def score(values):
+        for i, r in enumerate(rotable_bonds):
+            SetDihedral(conf, r, values[i])
+        return RMSD(work, crystal_mol)
+
+    result = minimize(score, crystal_torsions, method="L-BFGS-B", options={"eps": 1e-4, "ftol": 1e-5, "gtol": 1e-4})
+    return result.x, result.fun
+
+
+def optimize_rotatable_bonds_improved(crystal_mol, rdkit_mol, rotable_bonds):
+    crystal_conf = crystal_mol.GetConformer()
+    crystal_torsions = np.array([GetDihedral(crystal_conf, rb) for rb in rotable_bonds])
+
+    best_x, best_score = _optimize_from_mol(rdkit_mol, crystal_mol, rotable_bonds, crystal_torsions)
+    best_base = rdkit_mol
+
+    n_bonds = len(rotable_bonds)
+    template = copy.deepcopy(rdkit_mol)
+    template.RemoveAllConformers()
+
+    if n_bonds > 20:
+        n_gen = 2
+        n_optimize = 2
+    elif n_bonds <= 10:
+        n_gen = 50
+        n_optimize = 12
+    else:
+        n_gen = 25
+        n_optimize = 6
+
+    multi = copy.deepcopy(template)
+    ps = AllChem.ETKDGv2()
+    ps.randomSeed = 42
+    ps.pruneRmsThresh = -1.0
+    cids = AllChem.EmbedMultipleConfs(multi, numConfs=n_gen, params=ps)
+
+    if n_bonds > 20:
+        for cid in cids:
+            candidate = copy.deepcopy(template)
+            candidate.AddConformer(multi.GetConformer(cid), assignId=True)
+            x, s = _optimize_from_mol(candidate, crystal_mol, rotable_bonds, crystal_torsions)
+            if s < best_score:
+                best_score = s
+                best_x = x
+                best_base = candidate
+    else:
+        candidates = []
+        for cid in cids:
+            candidate = copy.deepcopy(template)
+            candidate.AddConformer(multi.GetConformer(cid), assignId=True)
+            screen_rmsd = _quick_screen(candidate, crystal_mol, rotable_bonds, crystal_torsions)
+            candidates.append((screen_rmsd, candidate))
+
+        candidates.sort(key=lambda x: x[0])
+        for _, candidate in candidates[:n_optimize]:
+            x, s = _optimize_from_mol(candidate, crystal_mol, rotable_bonds, crystal_torsions)
+            if s < best_score:
+                best_score = s
+                best_x = x
+                best_base = candidate
+
+    n_atoms = crystal_mol.GetNumAtoms()
+    n_diverse = 20 if n_atoms <= 36 else 10
+
+    for use_random in [False, True]:
+        if not (0.5 < best_score <= 1.0 and n_bonds <= 12 and n_atoms <= 45):
+            break
+        template_h = AllChem.AddHs(copy.deepcopy(template))
+        ps2 = AllChem.ETKDGv2()
+        ps2.randomSeed = 999
+        ps2.pruneRmsThresh = -1.0
+        ps2.useExpTorsionAnglePrefs = False
+        ps2.useBasicKnowledge = False
+        if use_random:
+            ps2.useRandomCoords = True
+        multi2_h = copy.deepcopy(template_h)
+        cids2 = AllChem.EmbedMultipleConfs(multi2_h, numConfs=n_diverse, params=ps2)
+        multi2 = _remove_all_hs(multi2_h)
+
+        extra = []
+        for cid in cids2:
+            candidate = copy.deepcopy(template)
+            candidate.AddConformer(multi2.GetConformer(cid), assignId=True)
+            AllChem.MMFFOptimizeMolecule(candidate, maxIters=50)
+            sr = _quick_screen(candidate, crystal_mol, rotable_bonds, crystal_torsions)
+            extra.append((sr, candidate))
+
+        extra.sort(key=lambda x: x[0])
+        for _, candidate in extra[:3]:
+            x, s = _optimize_from_mol(candidate, crystal_mol, rotable_bonds, crystal_torsions)
+            if s < best_score:
+                best_score = s
+                best_x = x
+                best_base = candidate
+
+    return apply_changes(best_base, best_x, rotable_bonds, conf_id=-1)
 
 
 class OptimizeConformer:
