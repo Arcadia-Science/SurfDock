@@ -33,17 +33,17 @@ def loss_function(tr_pred, rot_pred, tor_pred, data, t_to_sigma, device,tr_weigh
     tr_base_loss = (tr_score ** 2 * tr_sigma ** 2).mean(dim=mean_dims)
     # rotation component
     rot_score = data.rot_score
-    rot_score_norm = so3.score_norm(rot_sigma.cpu()).unsqueeze(-1).to(device)
+    rot_score_norm = so3.score_norm_gpu(rot_sigma).unsqueeze(-1)
     rot_loss = (((rot_pred - rot_score) / rot_score_norm) ** 2).mean(dim=mean_dims)
     rot_base_loss = ((rot_score / rot_score_norm) ** 2).mean(dim=mean_dims)
     # torsion component
     if not no_torsion:
 
         edge_tor_sigma = torch.from_numpy(
-            np.concatenate(data.tor_sigma_edge))
-        
+            np.concatenate(data.tor_sigma_edge)).to(device)
+
         tor_score = data.tor_score
-        tor_score_norm2 = torch.tensor(torus.score_norm(edge_tor_sigma.cpu().numpy())).float().to(device)
+        tor_score_norm2 = torus.score_norm_gpu(edge_tor_sigma)
 
         tor_loss = ((tor_pred - tor_score) ** 2 / tor_score_norm2)
         tor_base_loss = ((tor_score ** 2 / tor_score_norm2))

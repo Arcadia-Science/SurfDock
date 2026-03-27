@@ -1,4 +1,6 @@
+import math
 import os
+
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
@@ -97,4 +99,16 @@ def score_norm(eps):
     eps_idx = (np.log10(eps) - np.log10(MIN_EPS)) / (np.log10(MAX_EPS) - np.log10(MIN_EPS)) * N_EPS
     eps_idx = np.clip(np.around(eps_idx).astype(int), a_min=0, a_max=N_EPS-1)
     return torch.from_numpy(_exp_score_norms[eps_idx]).float()
+
+
+_exp_score_norms_tensor = torch.from_numpy(_exp_score_norms).float()
+_LOG_MIN_EPS = math.log10(MIN_EPS)
+_LOG_RANGE = math.log10(MAX_EPS) - math.log10(MIN_EPS)
+
+
+def score_norm_gpu(eps):
+    eps_idx = (torch.log10(eps) - _LOG_MIN_EPS) / _LOG_RANGE * N_EPS
+    eps_idx = eps_idx.round().long().clamp(0, N_EPS - 1)
+    table = _exp_score_norms_tensor.to(eps.device)
+    return table[eps_idx]
 

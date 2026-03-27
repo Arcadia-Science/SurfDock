@@ -1,4 +1,7 @@
+import math
+
 import numpy as np
+import torch
 import tqdm
 import os
 
@@ -83,3 +86,15 @@ def score_norm(sigma):
     sigma = (sigma - np.log(SIGMA_MIN)) / (np.log(SIGMA_MAX) - np.log(SIGMA_MIN)) * SIGMA_N
     sigma = np.round(np.clip(sigma, 0, SIGMA_N)).astype(int)
     return score_norm_[sigma]
+
+
+_score_norm_tensor = torch.from_numpy(score_norm_).float()
+_LOG_SIGMA_MIN = math.log(SIGMA_MIN)
+_LOG_SIGMA_RANGE = math.log(SIGMA_MAX) - math.log(SIGMA_MIN)
+
+
+def score_norm_gpu(sigma):
+    sigma_idx = (torch.log(sigma / math.pi) - _LOG_SIGMA_MIN) / _LOG_SIGMA_RANGE * SIGMA_N
+    sigma_idx = sigma_idx.round().long().clamp(0, SIGMA_N)
+    table = _score_norm_tensor.to(sigma.device)
+    return table[sigma_idx]

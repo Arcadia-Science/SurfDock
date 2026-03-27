@@ -390,7 +390,7 @@ class TensorProductScoreModel(torch.nn.Module):
 
         if self.scale_by_sigma:
             tr_pred = tr_pred / tr_sigma.unsqueeze(1)
-            rot_pred = rot_pred * so3.score_norm(rot_sigma.cpu()).unsqueeze(1).to(data['ligand'].x.device)
+            rot_pred = rot_pred * so3.score_norm_gpu(rot_sigma).unsqueeze(1)
 
         if self.no_torsion or data['ligand'].edge_mask.sum() == 0: return tr_pred, rot_pred, torch.empty(0, device=self.device)
         # torsional components
@@ -409,8 +409,7 @@ class TensorProductScoreModel(torch.nn.Module):
         edge_sigma = tor_sigma[data['ligand'].batch][data['ligand', 'ligand'].edge_index[0]][data['ligand'].edge_mask]
 
         if self.scale_by_sigma:
-            tor_pred = tor_pred * torch.sqrt(torch.tensor(torus.score_norm(edge_sigma.cpu().numpy())).float()
-                                             .to(data['ligand'].x.device))
+            tor_pred = tor_pred * torch.sqrt(torus.score_norm_gpu(edge_sigma))
 
         return tr_pred, rot_pred, tor_pred
 
