@@ -568,6 +568,7 @@ def train(cfg: TrainConfig):
 
     if args.cudnn_benchmark:
         torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision("high")
 
     for split_name, split_path in [("train", args.split_train), ("val", args.split_val)]:
         cache_base = args.cache_path
