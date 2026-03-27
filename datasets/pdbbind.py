@@ -541,12 +541,11 @@ def construct_loader(args, t_to_sigma):
                             num_conformers=args.num_conformers, **common_args)
     val_dataset = PDBBind(cache_path=args.cache_path, split_path=args.split_val, keep_original=True, **common_args)
 
-    # loader_class = DataListLoader if torch.cuda.is_available() else DataLoader
     loader_class = DataLoaderX
-    # prefetch_factor = 0
     prefetch = 2 if args.num_dataloader_workers > 0 else None
-    train_loader = loader_class(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_dataloader_workers,shuffle=True, pin_memory=args.pin_memory,prefetch_factor=prefetch,drop_last = True)
-    val_loader = loader_class(dataset=val_dataset, batch_size=args.batch_size, num_workers=args.num_dataloader_workers,shuffle=True, pin_memory=args.pin_memory,prefetch_factor=prefetch)
+    persistent = args.num_dataloader_workers > 0
+    train_loader = loader_class(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_dataloader_workers, shuffle=True, pin_memory=args.pin_memory, prefetch_factor=prefetch, drop_last=True, persistent_workers=persistent)
+    val_loader = loader_class(dataset=val_dataset, batch_size=args.batch_size, num_workers=args.num_dataloader_workers, shuffle=True, pin_memory=args.pin_memory, prefetch_factor=prefetch, persistent_workers=persistent)
 
     return train_loader, val_loader
 

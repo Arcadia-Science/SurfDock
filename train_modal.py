@@ -458,8 +458,8 @@ def merge_shards(cache_dir: str) -> int:
 
 @app.function(
     volumes={DATA_ROOT: runs_volume, ASSETS_ROOT: data_volume},
-    cpu=2,
-    memory=8192,
+    cpu=1,
+    memory=2048,
     timeout=6 * HOURS,
 )
 def process_complexes(
@@ -523,7 +523,7 @@ def process_complexes(
 
 @app.function(
     gpu="H100",
-    cpu=3,
+    cpu=2,
     volumes={DATA_ROOT: runs_volume},
     timeout=6 * HOURS,
 )

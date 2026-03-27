@@ -118,11 +118,7 @@ def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerato
                 loss, tr_loss, rot_loss, tor_loss, tr_base_loss, rot_base_loss, tor_base_loss = \
                     loss_fn(tr_pred, rot_pred, tor_pred, data=data, t_to_sigma=t_to_sigma, device=device)
             if not torch.isnan(loss.mean()):
-
-                # continue
                 accelerator.backward(loss)
-                # if accelerator.sync_gradients:
-                #     accelerator.clip_grad_norm_(model.parameters(), max_grad_norm = 1.0)
                 optimizer.step()
             else:
                 logger.info(f'loss is nan in these data samples: {data.name}')
@@ -146,7 +142,6 @@ def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerato
 
                 gc.collect()
                 torch.cuda.empty_cache()
-                continue
             elif 'Input mismatch' in str(e):
                 logger.info('| WARNING: weird torch_cluster error, skipping batch')
                 for p in model.parameters():
@@ -156,7 +151,6 @@ def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerato
                 del data
                 gc.collect()
                 torch.cuda.empty_cache()
-                continue
             else:
                 raise e
     logger.info('clear last train batch data and model grad')
