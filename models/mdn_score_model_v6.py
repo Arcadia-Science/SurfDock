@@ -1,5 +1,7 @@
 import math
 
+import cuequivariance as cue
+import cuequivariance_torch as cuet
 from e3nn import o3
 import torch
 from torch import nn
@@ -7,7 +9,6 @@ from torch.nn import functional as F
 from torch_cluster import radius, radius_graph
 from torch_scatter import scatter, scatter_mean,scatter_add
 import numpy as np
-from e3nn.nn import BatchNorm
 from torch_geometric.utils import  to_dense_batch
 from utils import so3, torus
 from datasets.process_mols import lig_feature_dims, rec_residue_feature_dims
@@ -52,18 +53,27 @@ class AtomEncoder(torch.nn.Module):
         return x_embedding
 
 
+def cue_irreps(s: str | cue.Irreps) -> cue.Irreps:
+    if isinstance(s, cue.Irreps):
+        return s
+    return cue.Irreps("O3", str(s))
+
+
 class TensorProductConvLayer(torch.nn.Module):
     def __init__(self, in_irreps, sh_irreps, out_irreps, n_edge_features, residual=True, batch_norm=True, dropout=0.0,
                  hidden_features=None):
         super(TensorProductConvLayer, self).__init__()
-        self.in_irreps = in_irreps
-        self.out_irreps = out_irreps
-        self.sh_irreps = sh_irreps
+        self.in_irreps = cue_irreps(in_irreps)
+        self.out_irreps = cue_irreps(out_irreps)
+        self.sh_irreps = cue_irreps(sh_irreps)
         self.residual = residual
         if hidden_features is None:
             hidden_features = n_edge_features
 
-        self.tp = tp = o3.FullyConnectedTensorProduct(in_irreps, sh_irreps, out_irreps, shared_weights=False)
+        self.tp = tp = cuet.FullyConnectedTensorProduct(
+            self.in_irreps, self.sh_irreps, self.out_irreps,
+            layout=cue.mul_ir, shared_weights=False, internal_weights=False,
+        )
 
         self.fc = nn.Sequential(
             nn.Linear(n_edge_features, hidden_features),
@@ -71,7 +81,7 @@ class TensorProductConvLayer(torch.nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_features, tp.weight_numel)
         )
-        self.batch_norm = BatchNorm(out_irreps) if batch_norm else None
+        self.batch_norm = cuet.layers.BatchNorm(self.out_irreps, layout=cue.mul_ir) if batch_norm else None
 
     def forward(self, node_attr, edge_index, edge_attr, edge_sh, out_nodes=None, reduce='mean'):
 
@@ -86,7 +96,6 @@ class TensorProductConvLayer(torch.nn.Module):
             out = out + padded
 
         if self.batch_norm:
-
             out = self.batch_norm(out)
         return out
 
@@ -110,7 +119,9 @@ class TensorProductScoreModelV6(torch.nn.Module):
         self.center_max_distance = center_max_distance
         self.distance_embed_dim = distance_embed_dim
         self.cross_distance_embed_dim = cross_distance_embed_dim
-        self.sh_irreps = o3.Irreps.spherical_harmonics(lmax=sh_lmax)
+        sh_str = " + ".join(f"1x{l}{'e' if l % 2 == 0 else 'o'}" for l in range(sh_lmax + 1))
+        self.sh_irreps = cue_irreps(sh_str)
+        self.sh_module = cuet.SphericalHarmonics(ls=list(range(sh_lmax + 1)), normalize=True)
         self.ns, self.nv = ns, nv
         self.scale_by_sigma = scale_by_sigma
         self.device = device
@@ -257,10 +268,11 @@ class TensorProductScoreModelV6(torch.nn.Module):
                     nn.Dropout(dropout),
                     nn.Linear(ns, ns)
                 )
-                self.final_tp_tor = o3.FullTensorProduct(self.sh_irreps, "2e")
+                self.sh_tor = cuet.SphericalHarmonics(ls=[2], normalize=True)
+                self.final_tp_tor = o3.FullTensorProduct(str(self.sh_irreps), "2e")
                 self.tor_bond_conv = TensorProductConvLayer(
                     in_irreps=self.lig_conv_layers[-1].out_irreps,
-                    sh_irreps=self.final_tp_tor.irreps_out,
+                    sh_irreps=cue_irreps(str(self.final_tp_tor.irreps_out)),
                     out_irreps=f'{ns}x0o + {ns}x0e',
                     n_edge_features=3 * ns,
                     residual=False,
@@ -434,7 +446,7 @@ class TensorProductScoreModelV6(torch.nn.Module):
         # 
         edge_length_emb = self.lig_distance_expansion(edge_vec.norm(dim=-1))
         edge_attr = torch.cat([edge_attr, edge_length_emb], 1)
-        edge_sh = o3.spherical_harmonics(self.sh_irreps, edge_vec, normalize=True, normalization='component')
+        edge_sh = self.sh_module(edge_vec)
         return node_attr, edge_index, edge_attr, edge_sh
     def build_rec_conv_graph(self, data):
         # builds the receptor initial node and edge embeddings
@@ -448,7 +460,7 @@ class TensorProductScoreModelV6(torch.nn.Module):
         # edge_sigma_emb = data['receptor'].node_sigma_emb[edge_index[0].long()]
 
         edge_attr =torch.cat([data['receptor', 'rec_contact', 'receptor'].edge_attr, edge_length_emb], 1).float()
-        edge_sh = o3.spherical_harmonics(self.sh_irreps, edge_vec, normalize=True, normalization='component')
+        edge_sh = self.sh_module(edge_vec)
         return node_attr, edge_index, edge_attr, edge_sh
     def build_cross_conv_graph(self, data, cross_distance_cutoff):
         # builds the cross edges between ligand and receptor
@@ -465,7 +477,7 @@ class TensorProductScoreModelV6(torch.nn.Module):
         edge_length_emb = self.cross_distance_expansion(edge_vec.norm(dim=-1))
         # edge_sigma_emb = data['ligand'].node_sigma_emb[src.long()]
         edge_attr = edge_length_emb
-        edge_sh = o3.spherical_harmonics(self.sh_irreps, edge_vec, normalize=True, normalization='component')
+        edge_sh = self.sh_module(edge_vec)
         return edge_index, edge_attr, edge_sh
     def build_center_conv_graph(self, data):
         # builds the filter and edges for the convolution generating translational and rotational scores
@@ -479,7 +491,7 @@ class TensorProductScoreModelV6(torch.nn.Module):
         edge_attr = self.center_distance_expansion(edge_vec.norm(dim=-1))
         edge_sigma_emb = data['ligand'].node_sigma_emb[edge_index[1].long()]
         edge_attr = torch.cat([edge_attr, edge_sigma_emb], 1)
-        edge_sh = o3.spherical_harmonics(self.sh_irreps, edge_vec, normalize=True, normalization='component')
+        edge_sh = self.sh_module(edge_vec)
         return edge_index, edge_attr, edge_sh
     
     def build_bond_conv_graph(self, data):
@@ -491,7 +503,7 @@ class TensorProductScoreModelV6(torch.nn.Module):
         edge_vec = data['ligand'].pos[edge_index[1]] - bond_pos[edge_index[0]]
         edge_attr = self.lig_distance_expansion(edge_vec.norm(dim=-1))
         edge_attr = self.final_edge_embedding(edge_attr)
-        edge_sh = o3.spherical_harmonics(self.sh_irreps, edge_vec, normalize=True, normalization='component')
+        edge_sh = self.sh_module(edge_vec)
         return bonds, edge_index, edge_attr, edge_sh
     def build_surface_conv_graph(self, data):
         node_attr = torch.nan_to_num(data['surface'].x)
@@ -502,7 +514,7 @@ class TensorProductScoreModelV6(torch.nn.Module):
         edge_length_emb = self.surface_distance_expansion(edge_vec.norm(dim=-1))
         # edge_sigma_emb = data['surface'].node_sigma_emb[edge_index[0].long()]
         edge_attr = torch.cat([data['surface','surface_edge','surface'].edge_attr, edge_length_emb], 1).float()
-        edge_sh = o3.spherical_harmonics(self.sh_irreps, edge_vec, normalize=True, normalization='component')
+        edge_sh = self.sh_module(edge_vec)
         return node_attr, edge_index, edge_attr, edge_sh
     
     def build_surface_rec_cross_conv_graph(self, data, cross_distance_cutoff = 15):
@@ -514,7 +526,7 @@ class TensorProductScoreModelV6(torch.nn.Module):
         edge_length_emb = self.cross_distance_expansion(edge_vec.norm(dim=-1))
         # edge_sigma_emb = data['receptor'].node_sigma_emb[src.long()]
         edge_attr = edge_length_emb#torch.cat([edge_sigma_emb, edge_length_emb], 1)
-        edge_sh = o3.spherical_harmonics(self.sh_irreps, edge_vec, normalize=True, normalization='component')
+        edge_sh = self.sh_module(edge_vec)
         return edge_index, edge_attr, edge_sh
 class GaussianSmearing(torch.nn.Module):
     # used to embed the edge distances

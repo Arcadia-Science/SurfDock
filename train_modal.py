@@ -40,6 +40,9 @@ surfdock_image = (
     )
     .pip_install(
         "e3nn>=0.6.0",
+        "cuequivariance",
+        "cuequivariance-torch",
+        "cuequivariance-ops-torch-cu12",
         "torch-geometric>=2.7.0",
         "rdkit>=2025.9.6",
         "biopython>=1.86",

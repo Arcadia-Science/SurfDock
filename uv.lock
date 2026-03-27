@@ -702,6 +702,34 @@ wheels = [
 ]
 
 [[package]]
+name = "cuequivariance"
+version = "0.9.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "opt-einsum" },
+    { name = "scipy" },
+    { name = "sympy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/04/33/d9bd6f1f70940fa657796db1ddb2efe5fffc9dc2cc415668970b95072161/cuequivariance-0.9.1.tar.gz", hash = "sha256:718936970beee9e3ea18a1aecdfb30b5915ab8abb9b2a81aeab004a82b3ea6f8", size = 238620, upload-time = "2026-03-16T17:25:35.185Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/25/70/7bfedcdd0223357930f5312c9ac5d6cc5fea88b73372c4087ffc3655a9e3/cuequivariance-0.9.1-py3-none-any.whl", hash = "sha256:9560813c90f2d530b9860a61a5e39e808a95a6345e9cc9768ea01e78de3a7c1e", size = 269242, upload-time = "2026-03-16T17:25:34.138Z" },
+]
+
+[[package]]
+name = "cuequivariance-torch"
+version = "0.9.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cuequivariance" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cc/ac/485ab3d37d4b5125327a45c4c60604bc89a54d4780420d2194fda96759e6/cuequivariance_torch-0.9.1.tar.gz", hash = "sha256:38aa0917a4c1ff3fafd9c2f34861170ddde0c1326c276fb48027608dc1ebe044", size = 191117, upload-time = "2026-03-16T17:25:40.425Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/35/cd/fa977d329f2d2b1da474625de8d8ef52be8803d85d9a28f74113bedc79c1/cuequivariance_torch-0.9.1-py3-none-any.whl", hash = "sha256:68777dff6a339a938d74ce77a506dbf12750966f99e29a7723482eb65a5b434f", size = 205915, upload-time = "2026-03-16T17:25:39.444Z" },
+]
+
+[[package]]
 name = "cycler"
 version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3173,6 +3201,8 @@ dependencies = [
     { name = "accelerate" },
     { name = "arcadia-apb", extra = ["modal"] },
     { name = "biopython" },
+    { name = "cuequivariance" },
+    { name = "cuequivariance-torch" },
     { name = "e3nn" },
     { name = "ipython" },
     { name = "loguru" },
@@ -3213,6 +3243,8 @@ requires-dist = [
     { name = "accelerate", specifier = ">=1.13.0" },
     { name = "arcadia-apb", extras = ["modal"], specifier = ">=0.3.0" },
     { name = "biopython", specifier = ">=1.86" },
+    { name = "cuequivariance" },
+    { name = "cuequivariance-torch" },
     { name = "e3nn", specifier = ">=0.6.0" },
     { name = "ipython", specifier = ">=9.11.0" },
     { name = "loguru", specifier = ">=0.7.3" },
