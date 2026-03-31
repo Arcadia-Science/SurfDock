@@ -2,7 +2,6 @@ import math
 
 import cuequivariance as cue
 import cuequivariance_torch as cuet
-from e3nn import o3
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -269,10 +268,12 @@ class TensorProductScoreModelV6(torch.nn.Module):
                     nn.Linear(ns, ns)
                 )
                 self.sh_tor = cuet.SphericalHarmonics(ls=[2], normalize=True)
-                self.final_tp_tor = o3.FullTensorProduct(str(self.sh_irreps), "2e")
+                ftp = cue.descriptors.full_tensor_product(self.sh_irreps, cue_irreps("1x2e"))
+                self.final_tp_tor = cuet.SegmentedPolynomial(ftp.polynomial, method="naive")
+                self.final_tp_tor_irreps_out = ftp.outputs[0].irreps
                 self.tor_bond_conv = TensorProductConvLayer(
                     in_irreps=self.lig_conv_layers[-1].out_irreps,
-                    sh_irreps=cue_irreps(str(self.final_tp_tor.irreps_out)),
+                    sh_irreps=self.final_tp_tor_irreps_out,
                     out_irreps=f'{ns}x0o + {ns}x0e',
                     n_edge_features=3 * ns,
                     residual=False,

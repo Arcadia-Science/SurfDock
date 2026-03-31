@@ -2,7 +2,6 @@ import math
 
 import cuequivariance as cue
 import cuequivariance_torch as cuet
-from e3nn import o3
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -270,10 +269,12 @@ class TensorProductScoreModel(torch.nn.Module):
                     nn.Linear(ns, ns)
                 )
                 self.sh_tor = cuet.SphericalHarmonics(ls=[2], normalize=True)
-                self.final_tp_tor = o3.FullTensorProduct(str(self.sh_irreps), "2e")
+                ftp = cue.descriptors.full_tensor_product(self.sh_irreps, cue_irreps("1x2e"))
+                self.final_tp_tor = cuet.SegmentedPolynomial(ftp.polynomial, method="naive")
+                self.final_tp_tor_irreps_out = ftp.outputs[0].irreps
                 self.tor_bond_conv = TensorProductConvLayer(
                     in_irreps=self.lig_conv_layers[-1].out_irreps,
-                    sh_irreps=cue_irreps(str(self.final_tp_tor.irreps_out)),
+                    sh_irreps=self.final_tp_tor_irreps_out,
                     out_irreps=f'{ns}x0o + {ns}x0e',
                     n_edge_features=3 * ns,
                     residual=False,
@@ -411,7 +412,7 @@ class TensorProductScoreModel(torch.nn.Module):
         tor_bond_attr = lig_node_attr[tor_bonds[0]] + lig_node_attr[tor_bonds[1]]
 
         tor_bonds_sh = self.sh_tor(tor_bond_vec)
-        tor_edge_sh = self.final_tp_tor(tor_edge_sh, tor_bonds_sh[tor_edge_index[0]])
+        [tor_edge_sh] = self.final_tp_tor([tor_edge_sh, tor_bonds_sh[tor_edge_index[0]]])
 
         tor_edge_attr = torch.cat([tor_edge_attr, lig_node_attr[tor_edge_index[1], :self.ns],
                                    tor_bond_attr[tor_edge_index[0], :self.ns]], -1)

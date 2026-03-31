@@ -830,21 +830,6 @@ wheels = [
 ]
 
 [[package]]
-name = "e3nn"
-version = "0.6.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "opt-einsum-fx" },
-    { name = "scipy" },
-    { name = "sympy" },
-    { name = "torch" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b4/fc/0e199f2c8adf0119b0de336099fb429f17e8aa302cd4e316e9d5c5310ae8/e3nn-0.6.0.tar.gz", hash = "sha256:5c2b414e9527aad27d755ae9546596e3f7706f45a21dae71c7deedb6c048e4de", size = 438744, upload-time = "2026-02-13T22:17:28.32Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/aa/35de114ddcd91183b724e64198e6eb760ad868de7eac2365301f891e9429/e3nn-0.6.0-py3-none-any.whl", hash = "sha256:24243cf77578f1872a5240a956563ba873d3de0c73459ac7dc3d09061c513dc3", size = 450697, upload-time = "2026-02-13T22:17:27.241Z" },
-]
-
-[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2134,20 +2119,6 @@ wheels = [
 ]
 
 [[package]]
-name = "opt-einsum-fx"
-version = "0.1.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "opt-einsum" },
-    { name = "packaging" },
-    { name = "torch" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/93/de/856dab99be0360c7275fee075eb0450a2ec82a54c4c33689606f62e9615b/opt_einsum_fx-0.1.4.tar.gz", hash = "sha256:7eeb7f91ecb70be65e6179c106ea7f64fc1db6319e3d1289a4518b384f81e74f", size = 12969, upload-time = "2021-11-07T20:49:33.811Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/4c/e0370709aaf9d7ceb68f975cac559751e75954429a77e83202e680606560/opt_einsum_fx-0.1.4-py3-none-any.whl", hash = "sha256:85f489f4c7c31fd88d5faf9669c09e61ec37a30098809fdcfe2a08a9e42f23c9", size = 13213, upload-time = "2021-11-07T20:49:32.395Z" },
-]
-
-[[package]]
 name = "optuna"
 version = "4.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3203,7 +3174,6 @@ dependencies = [
     { name = "biopython" },
     { name = "cuequivariance" },
     { name = "cuequivariance-torch" },
-    { name = "e3nn" },
     { name = "ipython" },
     { name = "loguru" },
     { name = "mdanalysis" },
@@ -3245,7 +3215,6 @@ requires-dist = [
     { name = "biopython", specifier = ">=1.86" },
     { name = "cuequivariance" },
     { name = "cuequivariance-torch" },
-    { name = "e3nn", specifier = ">=0.6.0" },
     { name = "ipython", specifier = ">=9.11.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mdanalysis", specifier = ">=2.10.0" },

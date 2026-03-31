@@ -39,7 +39,6 @@ surfdock_image = (
         find_links=PYG_CUDA_INDEX,
     )
     .pip_install(
-        "e3nn>=0.6.0",
         "cuequivariance",
         "cuequivariance-torch",
         "cuequivariance-ops-torch-cu12",
