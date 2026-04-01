@@ -104,7 +104,7 @@ class AverageMeter():
             return out
 
 
-def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerator,ema_weights):
+def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerator,ema_weights=None):
     model.train()
     # if mdn_mode:
         #
@@ -131,7 +131,8 @@ def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerato
                 accelerator.gather(loss),accelerator.gather(tr_loss), accelerator.gather(rot_loss), \
                     accelerator.gather(tor_loss), accelerator.gather(tr_base_loss), accelerator.gather(rot_base_loss), accelerator.gather(tor_base_loss)
 
-            ema_weights.update(model.parameters())
+            if ema_weights is not None:
+                ema_weights.update(model.parameters())
             meter.add([loss.mean().cpu().detach(), tr_loss.mean().cpu().detach(), rot_loss.mean().cpu().detach(), tor_loss.mean().cpu().detach(), tr_base_loss.mean().cpu().detach(), rot_base_loss.mean().cpu().detach(), tor_base_loss.mean().cpu().detach()])
         except RuntimeError as e:
             if 'out of memory' in str(e):

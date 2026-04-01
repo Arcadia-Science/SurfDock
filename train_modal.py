@@ -616,7 +616,7 @@ def train(cfg: TrainConfig):
 
     optimizer, scheduler_obj = get_optimizer_and_scheduler(args, model, accelerator, scheduler_mode="max")
     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
-    ema_weights = ExponentialMovingAverage(model.parameters(), decay=args.ema_rate)
+    ema_weights = ExponentialMovingAverage(model.parameters(), decay=args.ema_rate) if args.use_ema else None
 
     start_epoch = 0
     if args.restart_dir:
@@ -626,7 +626,7 @@ def train(cfg: TrainConfig):
             ckpt["optimizer"]["param_groups"][0]["lr"] = args.restart_lr
         optimizer.load_state_dict(ckpt["optimizer"])
         model.load_state_dict(ckpt["model"], strict=True)
-        if "ema_weights" in ckpt:
+        if ema_weights is not None and "ema_weights" in ckpt:
             ema_weights.load_state_dict(ckpt["ema_weights"], device=device)
         start_epoch = ckpt["epoch"] + 1
         logger.info(f"Restarting from epoch {start_epoch}")
@@ -677,8 +677,8 @@ def train(cfg: TrainConfig):
             f"tor {train_losses['tor_loss']:.4f}"
         )
 
-        ema_weights.store(model.parameters())
-        if args.use_ema:
+        if ema_weights is not None:
+            ema_weights.store(model.parameters())
             ema_weights.copy_to(model.parameters())
 
         val_losses = test_epoch(model, val_loader, device, t_to_sigma, loss_fn, accelerator, args.test_sigma_intervals, model_type=args.model_type)
@@ -703,11 +703,10 @@ def train(cfg: TrainConfig):
             )
             logs.update({f"valinf_{k}": v for k, v in inf_metrics.items()})
 
-        if not args.use_ema:
-            ema_weights.copy_to(model.parameters())
+        if ema_weights is not None:
+            ema_state_dict = copy.deepcopy(model.state_dict())
+            ema_weights.restore(model.parameters())
 
-        ema_state_dict = copy.deepcopy(model.state_dict())
-        ema_weights.restore(model.parameters())
         state_dict = model.state_dict()
 
         logs.update({f"train_{k}": v for k, v in train_losses.items()})
@@ -724,13 +723,15 @@ def train(cfg: TrainConfig):
             best_val_inference_value = logs[args.inference_earlystop_metric]
             best_val_inference_epoch = epoch
             torch.save(state_dict, os.path.join(run_dir, "best_inference_epoch_model.pt"))
-            torch.save(ema_state_dict, os.path.join(run_dir, "best_ema_inference_epoch_model.pt"))
+            if ema_weights is not None:
+                torch.save(ema_state_dict, os.path.join(run_dir, "best_ema_inference_epoch_model.pt"))
 
         if val_losses["loss"] <= best_val_loss:
             best_val_loss = val_losses["loss"]
             best_epoch = epoch
             torch.save(state_dict, os.path.join(run_dir, "best_model.pt"))
-            torch.save(ema_state_dict, os.path.join(run_dir, "best_ema_model.pt"))
+            if ema_weights is not None:
+                torch.save(ema_state_dict, os.path.join(run_dir, "best_ema_model.pt"))
 
         if scheduler_obj and (epoch + 1) % args.val_inference_freq == 0 and (epoch + 1) > args.skip_inference_freq:
             if args.val_inference_freq is not None and (epoch + 1) > args.skip_inference_freq:
@@ -740,15 +741,14 @@ def train(cfg: TrainConfig):
             if scheduler_obj is not None and scheduler_obj.num_bad_epochs < accelerator.num_processes:
                 scheduler_obj.num_bad_epochs = 1
 
-        torch.save(
-            {
-                "epoch": epoch,
-                "model": state_dict,
-                "optimizer": optimizer.state_dict(),
-                "ema_weights": ema_weights.state_dict(),
-            },
-            os.path.join(run_dir, "last_model.pt"),
-        )
+        ckpt_dict = {
+            "epoch": epoch,
+            "model": state_dict,
+            "optimizer": optimizer.state_dict(),
+        }
+        if ema_weights is not None:
+            ckpt_dict["ema_weights"] = ema_weights.state_dict()
+        torch.save(ckpt_dict, os.path.join(run_dir, "last_model.pt"))
         runs_volume.commit()
         logger.info(f"Epoch {epoch} checkpoint saved and committed to volume.")
 
