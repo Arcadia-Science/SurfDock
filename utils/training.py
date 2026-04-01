@@ -1,13 +1,15 @@
 import copy
 
 import numpy as np
+from rdkit.Chem import AllChem
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 from utils import so3, torus
 from utils.sampling import randomize_position, sampling
 import torch
 from utils.diffusion_utils import get_t_schedule
-from torch_geometric.data import Dataset,Data
+from torch_geometric.data import Dataset, Data
+from datasets.process_mols import generate_conformer, remove_all_hs
 from loguru import logger
 class ListDataset(Dataset):
     def __init__(self, list):
@@ -300,17 +302,40 @@ def inference_epoch(model, complex_graphs, device, t_to_sigma, args,accelerator)
     gc.collect()
     torch.cuda.empty_cache()
     return losses
-def inference_epoch_parallel(model, complex_graphs, device, t_to_sigma, args,accelerator):
+def _generate_fresh_conformer(mol):
+    mol = copy.deepcopy(mol)
+    mol.RemoveAllConformers()
+    mol = AllChem.AddHs(mol)
+    generate_conformer(mol)
+    mol = remove_all_hs(mol, sanitize=True)
+    return torch.from_numpy(mol.GetConformer().GetPositions()).float()
+
+
+def inference_epoch_parallel(model, complex_graphs, mols, device, t_to_sigma, args, accelerator):
     t_schedule = get_t_schedule(inference_steps=args.inference_steps)
     tr_schedule, rot_schedule, tor_schedule = t_schedule, t_schedule, t_schedule
+
+    fresh_positions = []
+    for mol in mols:
+        if mol is not None:
+            fresh_positions.append(_generate_fresh_conformer(mol))
+        else:
+            fresh_positions.append(None)
 
     dataset = ListDataset(complex_graphs)
     loader = DataLoader(dataset=dataset, batch_size=args.batch_size, shuffle=False)
     loader = accelerator.prepare(loader)
     rmsds = []
+    rmsds_crystal = []
+    graph_idx = 0
     for orig_complex_graph in tqdm(loader,disable=not accelerator.is_local_main_process):
         orig_complex_graph_list = orig_complex_graph.to_data_list()
-        data_list = [copy.deepcopy(graph) for graph in orig_complex_graph_list ]
+        data_list = [copy.deepcopy(graph) for graph in orig_complex_graph_list]
+        for g in data_list:
+            fp = fresh_positions[graph_idx]
+            if fp is not None:
+                g['ligand'].pos = fp.clone()
+            graph_idx += 1
         randomize_position(data_list, args.no_torsion, False, args.tr_sigma_max)
 
         predictions_list = None
@@ -340,12 +365,22 @@ def inference_epoch_parallel(model, complex_graphs, device, t_to_sigma, args,acc
             orig_ligand_pos = orig_graph['ligand'].pos[filterHs].to(model.device)
             rmsd = torch.sqrt(((ligand_pos - orig_ligand_pos) ** 2).sum()/(ligand_pos.shape[0]))
             rmsds.append(rmsd)
+
+            crystal_pos = torch.as_tensor(orig_graph['ligand'].orig_pos, dtype=torch.float32, device=model.device)[filterHs]
+            rmsd_crystal = torch.sqrt(((ligand_pos - crystal_pos) ** 2).sum() / (ligand_pos.shape[0]))
+            rmsds_crystal.append(rmsd_crystal)
     rmsds = torch.stack(rmsds)
+    rmsds_crystal = torch.stack(rmsds_crystal)
 
     rmsds = accelerator.gather(rmsds)
+    rmsds_crystal = accelerator.gather(rmsds_crystal)
 
     losses = {'rmsds_lt2': (100 * (rmsds < 2).sum() / len(rmsds)),
-              'rmsds_lt5': (100 * (rmsds < 5).sum() / len(rmsds))}
+              'rmsds_lt5': (100 * (rmsds < 5).sum() / len(rmsds)),
+              'rmsds_lt2_crystal': (100 * (rmsds_crystal < 2).sum() / len(rmsds_crystal)),
+              'rmsds_lt5_crystal': (100 * (rmsds_crystal < 5).sum() / len(rmsds_crystal)),
+              'rmsd_mean': rmsds.mean(),
+              'rmsd_mean_crystal': rmsds_crystal.mean()}
     del dataset, loader,predictions_list, confidences,ligand_pos, orig_ligand_pos, rmsd,filterHs,complex_graphs
     gc.collect()
     torch.cuda.empty_cache()

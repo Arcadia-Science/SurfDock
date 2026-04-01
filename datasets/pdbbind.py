@@ -133,7 +133,7 @@ class NoiseTransform(BaseTransform):
 class PDBBind(Dataset):
     def __init__(self, root, transform=None, cache_path='data/cache', split_path='data/', limit_complexes=0,
                  receptor_radius=30, num_workers=1, c_alpha_max_neighbors=None, popsize=15, maxiter=15,
-                 matching=True, keep_original=False, max_lig_size=None, remove_hs=False, num_conformers=1, all_atoms=False,
+                 matching="original", keep_original=False, max_lig_size=None, remove_hs=False, num_conformers=1, all_atoms=False,
                  atom_radius=5, atom_max_neighbors=None, esm_embeddings_path=None, esm_model_name='esm2_3B', pocket_cutoff='8A', require_ligand=False,
                  ligands_list=None, protein_path_list=None, ligand_descriptions=None, keep_local_structures=False,surface_path = None):
 
@@ -155,8 +155,7 @@ class PDBBind(Dataset):
         self.protein_path_list = protein_path_list
         self.ligand_descriptions = ligand_descriptions
         self.keep_local_structures = keep_local_structures
-        if matching or protein_path_list is not None and ligand_descriptions is not None:
-            cache_path += '_torsion'
+        cache_path += '_torsion'
         if all_atoms:
             cache_path += '_allatoms'
         self.full_cache_path = os.path.join(cache_path, f'limit{self.limit_complexes}'
@@ -164,7 +163,7 @@ class PDBBind(Dataset):
                                                         f'_maxLigSize{self.max_lig_size}_H{int(not self.remove_hs)}'
                                                         f'_recRad{self.receptor_radius}_recMax{self.c_alpha_max_neighbors}'
                                             + ('' if not all_atoms else f'_atomRad{atom_radius}_atomMax{atom_max_neighbors}')
-                                            + ('' if not matching or num_conformers == 1 else f'_confs{num_conformers}')
+                                            + ('' if num_conformers == 1 else f'_confs{num_conformers}')
                                             + ('' if self.esm_embeddings_path is None else f'_{self.esm_model_name}')
                                             + f'_pocket{self.pocket_cutoff}'
                                             + ('' if not keep_local_structures else f'_keptLocalStruct')
@@ -216,13 +215,15 @@ class PDBBind(Dataset):
 
     def get_complexs_list(self, num):
         graphs_list = []
+        mols_list = []
         for idx in range(min(num, len(self._index))):
             complex_graph = self._read_sample(idx)
             complex_graph['ligand'].orig_pos -= complex_graph.original_center.numpy()
             complex_graph['receptor'].center_pos -= complex_graph.original_center.numpy()
             complex_graph['receptor'].atoms_pos -= complex_graph.original_center.numpy()
+            mols_list.append(complex_graph.pop("mol", None))
             graphs_list.append(complex_graph)
-        return graphs_list
+        return graphs_list, mols_list
 
     def get(self, idx):
         if self.require_ligand:
@@ -239,8 +240,15 @@ class PDBBind(Dataset):
             complex_graph['ligand'].orig_pos -= complex_graph.original_center.numpy()
             complex_graph['receptor'].center_pos -= complex_graph.original_center.numpy()
             complex_graph['receptor'].atoms_pos -= complex_graph.original_center.numpy()
-            if self.transform is None:
+            if self.matching == "improved":
+                complex_graph['ligand'].pos = complex_graph['ligand'].pos_improved
+            elif self.matching == "none":
                 complex_graph['ligand'].pos = torch.from_numpy(complex_graph['ligand'].orig_pos).float()
+            if self.transform is None:
+                if not torch.is_tensor(complex_graph['ligand'].pos):
+                    complex_graph['ligand'].pos = torch.from_numpy(complex_graph['ligand'].pos).float()
+            complex_graph.pop("mol", None)
+            complex_graph.pop("pos_improved", None)
             return complex_graph
         
     def preprocessing(self):
@@ -412,7 +420,7 @@ class PDBBind(Dataset):
             complex_graph['name'] = name
             try:
                 t0 = time.perf_counter()
-                get_lig_graph_with_matching(lig, complex_graph, self.popsize, self.maxiter, self.matching, self.keep_original,
+                get_lig_graph_with_matching(lig, complex_graph, self.popsize, self.maxiter, self.matching != "none", self.keep_original,
                                             self.num_conformers, remove_hs=self.remove_hs)
                 t_lig_graph = time.perf_counter() - t0
 
@@ -442,11 +450,14 @@ class PDBBind(Dataset):
             if self.all_atoms:
                 complex_graph['atom'].pos -= protein_center
 
-            if (not self.matching) or self.num_conformers == 1:
+            if self.matching == "none" or self.num_conformers == 1:
                 complex_graph['ligand'].pos -= protein_center
             else:
                 for p in complex_graph['ligand'].pos:
                     p -= protein_center
+
+            if hasattr(complex_graph['ligand'], 'pos_improved'):
+                complex_graph['ligand'].pos_improved -= protein_center
 
             ligand_center = torch.mean(complex_graph['ligand'].pos, dim=0, keepdim=True)
             complex_graph.original_center = protein_center
@@ -531,7 +542,7 @@ def construct_loader(args, t_to_sigma):
                    'receptor_radius': args.receptor_radius,
                    'c_alpha_max_neighbors': args.c_alpha_max_neighbors,
                    'remove_hs': args.remove_hs, 'max_lig_size': args.max_lig_size,
-                   'matching': args.matching, 'popsize': args.matching_popsize, 'maxiter': args.matching_maxiter,
+                   'matching': args.matching, 'popsize': 20, 'maxiter': 20,
                    'num_workers': args.num_workers, 'all_atoms': args.all_atoms,
                    'atom_radius': args.atom_radius, 'atom_max_neighbors': args.atom_max_neighbors,
                    'esm_embeddings_path': args.esm_embeddings_path, 'esm_model_name': args.esm_model_name,

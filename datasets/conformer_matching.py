@@ -2,7 +2,7 @@ import copy, time
 import numpy as np
 from collections import defaultdict
 from rdkit import Chem, RDLogger
-from rdkit.Chem import AllChem, rdMolTransforms
+from rdkit.Chem import AllChem, RemoveStereochemistry, rdMolTransforms
 from rdkit import Geometry
 import networkx as nx
 from scipy.optimize import differential_evolution, minimize
@@ -105,6 +105,7 @@ def optimize_rotatable_bonds_improved(crystal_mol, rdkit_mol, rotable_bonds):
         n_optimize = 6
 
     multi = copy.deepcopy(template)
+    RemoveStereochemistry(multi)
     ps = AllChem.ETKDGv2()
     ps.randomSeed = 42
     ps.pruneRmsThresh = -1.0
@@ -142,6 +143,7 @@ def optimize_rotatable_bonds_improved(crystal_mol, rdkit_mol, rotable_bonds):
         if not (0.5 < best_score <= 1.0 and n_bonds <= 12 and n_atoms <= 45):
             break
         template_h = AllChem.AddHs(copy.deepcopy(template))
+        RemoveStereochemistry(template_h)
         ps2 = AllChem.ETKDGv2()
         ps2.randomSeed = 999
         ps2.pruneRmsThresh = -1.0

@@ -19,7 +19,7 @@ import MDAnalysis as mda
 from MDAnalysis.analysis import distances
 from scipy.spatial import distance_matrix
 import torch.nn.functional as F
-from datasets.conformer_matching import get_torsion_angles, optimize_rotatable_bonds
+from datasets.conformer_matching import get_torsion_angles, optimize_rotatable_bonds, optimize_rotatable_bonds_improved
 from utils.torsion import get_transformation_mask
 from loguru import logger
 def remove_all_hs(mol,sanitize=None):
@@ -397,6 +397,8 @@ def get_lig_graph(mol, complex_graph,use_chirality = True):
     return
 
 def generate_conformer(mol,useRandomCoords=True):
+    from rdkit.Chem import RemoveStereochemistry
+    RemoveStereochemistry(mol)
     prop_dict = mol.GetPropsAsDict()
     ps = AllChem.ETKDGv2()
     ps.timeout = 60
@@ -461,10 +463,20 @@ def get_lig_graph_with_matching(mol_, complex_graph, popsize, maxiter, matching,
                     complex_graph['ligand'].pos = [complex_graph['ligand'].pos]
                 complex_graph['ligand'].pos.append(torch.from_numpy(mol_rdkit.GetConformer().GetPositions()).float())
 
+        if rotable_bonds:
+            mol_improved = optimize_rotatable_bonds_improved(mol_maybe_noh, mol_rdkit, rotable_bonds)
+            mol_aligned = copy.deepcopy(mol_maybe_noh)
+            mol_aligned.AddConformer(mol_improved.GetConformer())
+            AllChem.AlignMolConformers(mol_aligned)
+            complex_graph['ligand'].pos_improved = torch.from_numpy(mol_aligned.GetConformers()[1].GetPositions()).float()
+        else:
+            complex_graph['ligand'].pos_improved = complex_graph['ligand'].pos.clone() if torch.is_tensor(complex_graph['ligand'].pos) else complex_graph['ligand'].pos[0].clone()
+
     else:  # no matching
         complex_graph.rmsd_matching = 0
         if remove_hs: mol_ = remove_all_hs(mol_)
         get_lig_graph(mol_, complex_graph)
+        complex_graph['ligand'].pos_improved = complex_graph['ligand'].pos.clone()
 
     edge_mask, mask_rotate = get_transformation_mask(complex_graph)
     complex_graph['ligand'].edge_mask = torch.tensor(edge_mask)

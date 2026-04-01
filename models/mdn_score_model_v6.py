@@ -269,7 +269,7 @@ class TensorProductScoreModelV6(torch.nn.Module):
                 )
                 self.sh_tor = cuet.SphericalHarmonics(ls=[2], normalize=True)
                 ftp = cue.descriptors.full_tensor_product(self.sh_irreps, cue_irreps("1x2e"))
-                self.final_tp_tor = cuet.SegmentedPolynomial(ftp.polynomial, method="naive")
+                self.final_tp_tor = cuet.SegmentedPolynomial(ftp.polynomial, method="fused_tp")
                 self.final_tp_tor_irreps_out = ftp.outputs[0].irreps
                 self.tor_bond_conv = TensorProductConvLayer(
                     in_irreps=self.lig_conv_layers[-1].out_irreps,

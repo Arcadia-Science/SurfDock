@@ -155,9 +155,7 @@ class TrainConfig:
     c_alpha_max_neighbors: int = 10
     atom_radius: float = 5.0
     atom_max_neighbors: int = 8
-    matching: bool = True
-    matching_popsize: int = 20
-    matching_maxiter: int = 20
+    matching: str = "original"
     num_conformers: int = 1
     max_radius: float = 5.0
     cross_max_distance: float = 80.0
@@ -232,8 +230,6 @@ class CacheConfig:
     atom_max_neighbors: int = 8
     remove_hs: bool = False
     matching: bool = True
-    popsize: int = 20
-    maxiter: int = 20
     keep_original: bool = True
     num_conformers: int = 1
     max_lig_size: int | None = None
@@ -282,28 +278,34 @@ def _process_one_complex(
         get_lig_graph_with_matching,
         get_rec_graph,
         parse_pdb_from_path,
+        remove_all_hs,
     )
 
     rec_path = os.path.join(cfg.surface_path, name, f"{name}_protein_processed_{cfg.pocket_cutoff}.pdb")
     if not os.path.exists(rec_path):
+        print(f"SKIP {name}: missing receptor PDB at {rec_path}")
         return [], []
 
     try:
         rec_model = parse_pdb_from_path(rec_path)
-    except Exception:
+    except Exception as e:
+        print(f"SKIP {name}: parse_pdb_from_path failed: {e}")
         return [], []
 
     pure_pocket_path = rec_path.replace(".pdb", "_pure.pdb")
     lig_path = os.path.join(cfg.data_dir, name, f"{name}_ligand.sdf")
     lig = read_abs_file_mol(lig_path, remove_hs=False, sanitize=True)
     if lig is None:
+        print(f"SKIP {name}: failed to read ligand SDF at {lig_path}")
         return [], []
 
     if cfg.max_lig_size is not None and lig.GetNumHeavyAtoms() > cfg.max_lig_size:
+        print(f"SKIP {name}: ligand too large ({lig.GetNumHeavyAtoms()} atoms)")
         return [], []
 
     from rdkit.Chem import GetMolFrags
     if len(GetMolFrags(lig)) > 1:
+        print(f"SKIP {name}: multi-fragment ligand ({len(GetMolFrags(lig))} fragments)")
         return [], []
 
     complex_graph = HeteroData()
@@ -313,13 +315,18 @@ def _process_one_complex(
         get_lig_graph_with_matching(
             lig,
             complex_graph,
-            cfg.popsize,
-            cfg.maxiter,
+            20,
+            20,
             cfg.matching,
             cfg.keep_original,
             cfg.num_conformers,
             remove_hs=cfg.remove_hs,
         )
+
+        lig_mol = copy.deepcopy(lig)
+        if cfg.remove_hs:
+            lig_mol = remove_all_hs(lig_mol, sanitize=True)
+        complex_graph["mol"] = lig_mol
 
         rec, rec_coords, c_alpha_coords, n_coords, c_coords, lm_embeddings = (
             extract_receptor_structure(
@@ -330,6 +337,7 @@ def _process_one_complex(
         )
 
         if lm_embeddings is not None and c_alpha_coords is not None and len(c_alpha_coords) != len(lm_embeddings):
+            print(f"SKIP {name}: ESM embedding length ({len(lm_embeddings)}) != c_alpha count ({len(c_alpha_coords)})")
             return [], []
 
         mda_rec_model = mda.Universe(pure_pocket_path)
@@ -348,7 +356,8 @@ def _process_one_complex(
             remove_hs=cfg.remove_hs,
             lm_embeddings=lm_embeddings,
         )
-    except Exception:
+    except Exception as e:
+        print(f"SKIP {name}: graph construction failed: {e}")
         return [], []
 
     protein_center = torch.mean(complex_graph["receptor"].pos, dim=0, keepdim=True)
@@ -362,12 +371,16 @@ def _process_one_complex(
         for p in complex_graph["ligand"].pos:
             p -= protein_center
 
+    if hasattr(complex_graph["ligand"], "pos_improved"):
+        complex_graph["ligand"].pos_improved -= protein_center
+
     ligand_center = torch.mean(complex_graph["ligand"].pos, dim=0, keepdim=True)
     complex_graph.original_center = protein_center
     complex_graph.original_ligand_center = ligand_center + protein_center
 
     ply_path = os.path.join(cfg.surface_path, name, f"{name}_protein_processed_{cfg.pocket_cutoff}.ply")
     if not os.path.exists(ply_path):
+        print(f"SKIP {name}: missing PLY at {ply_path}")
         return [], []
 
     try:
@@ -393,7 +406,8 @@ def _process_one_complex(
         complex_graph["surface"].x = surface_data.x
         complex_graph["surface", "surface_edge", "surface"].edge_index = surface_data.edge_index
         complex_graph["surface", "surface_edge", "surface"].edge_attr = surface_data.edge_attr
-    except Exception:
+    except Exception as e:
+        print(f"SKIP {name}: surface processing failed: {e}")
         return [], []
 
     return [complex_graph], [lig]
@@ -525,9 +539,9 @@ def process_complexes(
 
 @app.function(
     gpu="H100",
-    cpu=2,
+    cpu=4,
     volumes={DATA_ROOT: runs_volume},
-    timeout=6 * HOURS,
+    timeout=12 * HOURS,
 )
 def train(cfg: TrainConfig):
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -574,8 +588,7 @@ def train(cfg: TrainConfig):
 
     for split_name, split_path in [("train", args.split_train), ("val", args.split_val)]:
         cache_base = args.cache_path
-        if args.matching:
-            cache_base += "_torsion"
+        cache_base += "_torsion"
         if args.all_atoms:
             cache_base += "_allatoms"
         split_basename = os.path.splitext(os.path.basename(split_path))[0]
@@ -586,7 +599,7 @@ def train(cfg: TrainConfig):
             f"_maxLigSize{args.max_lig_size}_H{int(not args.remove_hs)}"
             f"_recRad{args.receptor_radius}_recMax{args.c_alpha_max_neighbors}"
             + (f"_atomRad{args.atom_radius}_atomMax{args.atom_max_neighbors}" if args.all_atoms else "")
-            + (f"_confs{args.num_conformers}" if args.matching and args.num_conformers != 1 else "")
+            + (f"_confs{args.num_conformers}" if args.num_conformers != 1 else "")
             + (f"_{args.esm_model_name}" if args.esm_embeddings_path is not None else "")
             + f"_pocket{args.pocket_cutoff}",
         )
@@ -642,7 +655,7 @@ def train(cfg: TrainConfig):
 
     logger.info("Starting training...")
     logger.info("Load val inference dataset ...")
-    val_inference_datalist = val_loader.dataset.get_complexs_list(args.num_inference_complexes)
+    val_inference_datalist, val_inference_mols = val_loader.dataset.get_complexs_list(args.num_inference_complexes)
     logger.info(f"Size of dataset is: {len(val_inference_datalist)}.")
 
     if scheduler_obj is not None:
@@ -679,12 +692,14 @@ def train(cfg: TrainConfig):
         )
 
         if args.val_inference_freq is not None and (epoch + 1) % args.val_inference_freq == 0 and (epoch + 1) > args.skip_inference_freq:
-            inf_metrics = inference_epoch_parallel(model, val_inference_datalist, device, t_to_sigma, args, accelerator)
+            inf_metrics = inference_epoch_parallel(model, val_inference_datalist, val_inference_mols, device, t_to_sigma, args, accelerator)
             nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             logger.info(f"epoch[{epoch}]@{nowtime} --> inference_metric=")
             logger.info(
                 f"Epoch {epoch}: Val inference rmsds_lt2 {inf_metrics['rmsds_lt2']:.3f} "
-                f"rmsds_lt5 {inf_metrics['rmsds_lt5']:.3f}"
+                f"rmsds_lt5 {inf_metrics['rmsds_lt5']:.3f} "
+                f"rmsds_lt2_crystal {inf_metrics['rmsds_lt2_crystal']:.3f} "
+                f"rmsds_lt5_crystal {inf_metrics['rmsds_lt5_crystal']:.3f}"
             )
             logs.update({f"valinf_{k}": v for k, v in inf_metrics.items()})
 
@@ -757,8 +772,6 @@ def build_cache(
     atom_max_neighbors: int = 8,
     remove_hs: bool = False,
     matching: bool = True,
-    matching_popsize: int = 20,
-    matching_maxiter: int = 20,
     num_conformers: int = 1,
     max_lig_size: int | None = None,
 ):
@@ -786,8 +799,6 @@ def build_cache(
         atom_max_neighbors=atom_max_neighbors,
         remove_hs=remove_hs,
         matching=matching,
-        popsize=matching_popsize,
-        maxiter=matching_maxiter,
         num_conformers=num_conformers,
         max_lig_size=max_lig_size,
     )
@@ -881,11 +892,9 @@ def main(
     c_alpha_max_neighbors: int = 10,
     atom_radius: float = 5.0,
     atom_max_neighbors: int = 8,
-    matching_popsize: int = 20,
-    matching_maxiter: int = 20,
     num_conformers: int = 1,
     max_lig_size: int | None = None,
-    matching: bool = True,
+    matching: str = "original",
     num_workers: int = 1,
     scale_by_sigma: bool = True,
     cudnn_benchmark: bool = False,
@@ -919,7 +928,7 @@ def main(
         all_atoms=all_atoms, remove_hs=remove_hs,
         receptor_radius=receptor_radius, c_alpha_max_neighbors=c_alpha_max_neighbors,
         atom_radius=atom_radius, atom_max_neighbors=atom_max_neighbors,
-        matching=matching, matching_popsize=matching_popsize, matching_maxiter=matching_maxiter,
+        matching=matching,
         num_conformers=num_conformers, max_lig_size=max_lig_size,
         num_workers=num_workers, scale_by_sigma=scale_by_sigma, cudnn_benchmark=cudnn_benchmark,
         test_sigma_intervals=test_sigma_intervals,
