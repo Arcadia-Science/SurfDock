@@ -312,52 +312,64 @@ def inference_epoch_parallel(model, complex_graphs, mols, device, t_to_sigma, ar
     dataset = ListDataset(complex_graphs)
     loader = DataLoader(dataset=dataset, batch_size=args.batch_size, shuffle=False)
     loader = accelerator.prepare(loader)
-    rmsds = []
-    rmsds_crystal = []
-    graph_idx = 0
-    for orig_complex_graph in tqdm(loader,disable=not accelerator.is_local_main_process):
-        orig_complex_graph_list = orig_complex_graph.to_data_list()
-        data_list = [copy.deepcopy(graph) for graph in orig_complex_graph_list]
-        for g in data_list:
-            fp = fresh_positions[graph_idx]
-            if fp is not None:
-                g['ligand'].pos = fp.clone()
-            graph_idx += 1
-        randomize_position(data_list, args.no_torsion, False, args.tr_sigma_max)
 
-        predictions_list = None
-        confidences = None
-        failed_convergence_counter = 0
-        while predictions_list == None:
-            try:
-                predictions_list, confidences = sampling(input_data_list=data_list, model=model.module if device.type=='cuda' else model,
-                                                         inference_steps=args.inference_steps,
-                                                         tr_schedule=tr_schedule, rot_schedule=rot_schedule,
-                                                         tor_schedule=tor_schedule,
-                                                         device=device, t_to_sigma=t_to_sigma, model_args=args)
-            except Exception as e:
-                if 'failed to converge' in str(e):
-                    failed_convergence_counter += 1
-                    if failed_convergence_counter > 5:
-                        logger.info('| WARNING: SVD failed to converge 5 times - skipping the complex')
-                        break
-                    logger.info('| WARNING: SVD failed to converge - trying again with a new sample')
-                else:
-                    raise e
-        if failed_convergence_counter > 5: continue
-        for pos_idx ,(predict_graph,orig_graph) in enumerate(zip(predictions_list,orig_complex_graph_list)):
+    best_rmsds: dict[int, torch.Tensor] = {}
+    best_rmsds_crystal: dict[int, torch.Tensor] = {}
 
-            filterHs = torch.not_equal(predict_graph['ligand'].x[:, 0], 0)
-            ligand_pos = predict_graph['ligand'].pos[filterHs].to(model.device)
-            orig_ligand_pos = orig_graph['ligand'].pos[filterHs].to(model.device)
-            rmsd = torch.sqrt(((ligand_pos - orig_ligand_pos) ** 2).sum()/(ligand_pos.shape[0]))
-            rmsds.append(rmsd)
+    for sample_idx in range(args.samples_per_complex):
+        graph_idx = 0
+        for orig_complex_graph in tqdm(loader, disable=not accelerator.is_local_main_process):
+            orig_complex_graph_list = orig_complex_graph.to_data_list()
+            data_list = [copy.deepcopy(graph) for graph in orig_complex_graph_list]
+            batch_start_idx = graph_idx
+            for g in data_list:
+                fp = fresh_positions[graph_idx]
+                if fp is not None:
+                    g['ligand'].pos = fp.clone()
+                graph_idx += 1
+            randomize_position(data_list, args.no_torsion, False, args.tr_sigma_max)
 
-            crystal_pos = torch.as_tensor(orig_graph['ligand'].orig_pos, dtype=torch.float32, device=model.device)[filterHs]
-            rmsd_crystal = torch.sqrt(((ligand_pos - crystal_pos) ** 2).sum() / (ligand_pos.shape[0]))
-            rmsds_crystal.append(rmsd_crystal)
-    rmsds = torch.stack(rmsds)
-    rmsds_crystal = torch.stack(rmsds_crystal)
+            predictions_list = None
+            failed_convergence_counter = 0
+            while predictions_list is None:
+                try:
+                    predictions_list, confidences = sampling(
+                        input_data_list=data_list,
+                        model=model.module if device.type == 'cuda' else model,
+                        inference_steps=args.inference_steps,
+                        tr_schedule=tr_schedule, rot_schedule=rot_schedule,
+                        tor_schedule=tor_schedule,
+                        device=device, t_to_sigma=t_to_sigma, model_args=args,
+                    )
+                except Exception as e:
+                    if 'failed to converge' in str(e):
+                        failed_convergence_counter += 1
+                        if failed_convergence_counter > 5:
+                            logger.info('| WARNING: SVD failed to converge 5 times - skipping the complex')
+                            break
+                        logger.info('| WARNING: SVD failed to converge - trying again with a new sample')
+                    else:
+                        raise e
+            if failed_convergence_counter > 5:
+                continue
+
+            for pos_idx, (predict_graph, orig_graph) in enumerate(zip(predictions_list, orig_complex_graph_list)):
+                complex_idx = batch_start_idx + pos_idx
+                filterHs = torch.not_equal(predict_graph['ligand'].x[:, 0], 0)
+                ligand_pos = predict_graph['ligand'].pos[filterHs].to(model.device)
+                orig_ligand_pos = orig_graph['ligand'].pos[filterHs].to(model.device)
+                rmsd = torch.sqrt(((ligand_pos - orig_ligand_pos) ** 2).sum() / ligand_pos.shape[0])
+
+                crystal_pos = torch.as_tensor(orig_graph['ligand'].orig_pos, dtype=torch.float32, device=model.device)[filterHs]
+                rmsd_crystal = torch.sqrt(((ligand_pos - crystal_pos) ** 2).sum() / ligand_pos.shape[0])
+
+                if complex_idx not in best_rmsds or rmsd < best_rmsds[complex_idx]:
+                    best_rmsds[complex_idx] = rmsd
+                if complex_idx not in best_rmsds_crystal or rmsd_crystal < best_rmsds_crystal[complex_idx]:
+                    best_rmsds_crystal[complex_idx] = rmsd_crystal
+
+    rmsds = torch.stack([best_rmsds[k] for k in sorted(best_rmsds)])
+    rmsds_crystal = torch.stack([best_rmsds_crystal[k] for k in sorted(best_rmsds_crystal)])
 
     rmsds = accelerator.gather(rmsds)
     rmsds_crystal = accelerator.gather(rmsds_crystal)

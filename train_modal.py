@@ -178,6 +178,7 @@ class TrainConfig:
     skip_inference_freq: int = 0
     num_inference_complexes: int = 100
     inference_steps: int = 20
+    samples_per_complex: int = 1
     inference_earlystop_metric: str = "valinf_rmsds_lt2"
     inference_earlystop_goal: str = "max"
     scheduler: str | None = None
@@ -863,6 +864,7 @@ def main(
     skip_inference_freq: int = 0,
     num_inference_complexes: int = 100,
     inference_steps: int = 20,
+    samples_per_complex: int = 1,
     inference_earlystop_metric: str = "valinf_rmsds_lt2",
     inference_earlystop_goal: str = "max",
     max_radius: float = 5.0,
@@ -912,6 +914,7 @@ def main(
         scheduler=scheduler, scheduler_patience=scheduler_patience,
         val_inference_freq=val_inference_freq, skip_inference_freq=skip_inference_freq,
         num_inference_complexes=num_inference_complexes, inference_steps=inference_steps,
+        samples_per_complex=samples_per_complex,
         inference_earlystop_metric=inference_earlystop_metric,
         inference_earlystop_goal=inference_earlystop_goal,
         max_radius=max_radius, cross_max_distance=cross_max_distance,
