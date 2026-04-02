@@ -749,8 +749,6 @@ def train(cfg: TrainConfig):
         if ema_weights is not None:
             ckpt_dict["ema_weights"] = ema_weights.state_dict()
         torch.save(ckpt_dict, os.path.join(run_dir, "last_model.pt"))
-        runs_volume.commit()
-        logger.info(f"Epoch {epoch} checkpoint saved and committed to volume.")
 
     logger.info(f"Best Validation Loss {best_val_loss} on Epoch {best_epoch}")
     logger.info(f"Best inference metric {best_val_inference_value} on Epoch {best_val_inference_epoch}")

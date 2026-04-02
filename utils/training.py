@@ -156,13 +156,6 @@ def train_epoch(model, loader, optimizer, device, t_to_sigma, loss_fn,accelerato
                 torch.cuda.empty_cache()
             else:
                 raise e
-    logger.info('clear last train batch data and model grad')
-    for p in model.parameters():
-        if p.grad is not None:
-            del p.grad  # free some memory
-    del data
-    gc.collect()
-    torch.cuda.empty_cache()
     return meter.summary()
 
 
@@ -233,13 +226,6 @@ def test_epoch(model, loader, device, t_to_sigma, loss_fn,accelerator, test_sigm
                 continue
             else:
                 raise e
-    logger.info('clear val batch data and model grad')
-    for p in model.parameters():
-        if p.grad is not None:
-            del p.grad  # free some memory
-    del data
-    gc.collect()
-    torch.cuda.empty_cache()
     out = meter.summary()
     if test_sigma_intervals > 0: out.update(meter_all.summary())
     return out
@@ -382,7 +368,4 @@ def inference_epoch_parallel(model, complex_graphs, mols, device, t_to_sigma, ar
               'rmsds_lt5_crystal': (100 * (rmsds_crystal < 5).sum() / len(rmsds_crystal)),
               'rmsd_mean': rmsds.mean(),
               'rmsd_mean_crystal': rmsds_crystal.mean()}
-    del dataset, loader,predictions_list, confidences,ligand_pos, orig_ligand_pos, rmsd,filterHs,complex_graphs
-    gc.collect()
-    torch.cuda.empty_cache()
     return losses
